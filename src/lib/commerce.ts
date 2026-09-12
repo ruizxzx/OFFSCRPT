@@ -66,6 +66,61 @@ async function callPublicApi<T>(action:string, params:Record<string,string>={}):
   return payload as T;
 }
 
+
+export type SellerOnboardingStatus = 'not_started'|'collecting_information'|'creating_account'|'created'|'pending_review'|'active'|'suspended'|'rejected'|'error'|'reconciliation_required';
+export interface CreatorSellerProfile {
+  id: string;
+  creatorId: string;
+  sellerId?: string;
+  sellerEnabled: boolean;
+  onboardingStatus: SellerOnboardingStatus;
+  health?: 'not_started'|'pending'|'ready'|'suspended'|'error'|'reconciliation_required';
+  razorpayAccountId?: string;
+  razorpayAccountStatus?: string;
+  legalBusinessName?: string;
+  customerFacingBusinessName?: string;
+  businessType?: string;
+  email?: string;
+  phone?: string;
+  category?: string;
+  subcategory?: string;
+  description?: string;
+  address?: {street1:string;street2?:string;city:string;state:string;postalCode:string;country:string};
+  updatedAt?: string;
+  createdAt?: string;
+}
+export interface SellerOnboardingInput {
+  email: string;
+  phone: string;
+  legalBusinessName: string;
+  customerFacingBusinessName: string;
+  businessType: string;
+  contactName: string;
+  category: string;
+  subcategory: string;
+  description: string;
+  street1: string;
+  street2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+}
+export async function getCreatorSeller(): Promise<{seller:CreatorSellerProfile}> {
+  return callApi('getSeller');
+}
+export async function createCreatorSeller(input:SellerOnboardingInput): Promise<{seller:CreatorSellerProfile;message?:string;reused?:boolean}> {
+  return callApi('createSeller',input as unknown as Record<string,unknown>);
+}
+export async function refreshCreatorSeller(): Promise<{seller:CreatorSellerProfile;provider?:{accountId:string;status:string}}> {
+  return callApi('refreshSeller');
+}
+export async function enableCreatorSeller(): Promise<{seller:CreatorSellerProfile}> {
+  return callApi('enableSeller');
+}
+export async function disableCreatorSeller(): Promise<{seller:CreatorSellerProfile}> {
+  return callApi('disableSeller');
+}
+
 export async function createCommerceProduct(input: Pick<CommerceProduct,'title'|'description'|'type'|'visibility'|'currency'> & { price?: {amount:number;currency:string;billingType:CommerceBillingType;interval?:'month'|'year';intervalCount?:number;trialDays?:number} }): Promise<{product:CommerceProduct;price?:CommercePrice}> {
   return callApi('createProduct', input);
 }
@@ -153,3 +208,7 @@ export async function listCommercePrices(productId:string): Promise<CommercePubl
   const result=await callPublicApi<{prices:CommercePublicPrice[]}>('listPublicPrices',{productId});
   return Array.isArray(result.prices)?result.prices:[];
 }
+
+export interface AdminSellerRow extends CreatorSellerProfile { id:string; }
+export async function adminListCreatorSellers(): Promise<{sellers:AdminSellerRow[]}> { return callApi('adminListSellers'); }
+export async function adminSetCreatorSellerStatus(creatorId:string,status:'active'|'suspended'|'created'): Promise<{seller:CreatorSellerProfile}> { return callApi('adminSetSellerStatus',{creatorId,status}); }

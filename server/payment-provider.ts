@@ -5,6 +5,8 @@ export interface PaymentProvider {
   verifyPaymentSignature(orderId:string,paymentId:string,signature:string):boolean;
   verifyWebhookSignature(rawBody:string,signature:string):boolean;
   fetchOrder(orderId:string):Promise<any>;
+  createLinkedAccount?(input:any):Promise<any>;
+  fetchLinkedAccount?(accountId:string):Promise<any>;
 }
 
 export type RazorpayEnvironment = 'test'|'production';

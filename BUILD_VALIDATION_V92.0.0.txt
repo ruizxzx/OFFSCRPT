@@ -1,0 +1,30 @@
+OFFSCRPT V92.0.0 BUILD VALIDATION REPORT
+
+Baseline supplied: OFFSCRPT V90.0.0 Razorpay payment build (the uploaded baseline ZIP), because no V91 ZIP was supplied. V92 preserves the V90 payment layer and adds seller onboarding + Razorpay Route foundation.
+
+PASSED
+- V92 Route validation: 19/19 checks
+- Commerce validation
+- V89 marketplace compatibility validation
+- V90 Razorpay compatibility validation
+- Deployment configuration validation
+- Firestore rules validation
+- Schema validation
+- Runtime pattern validation
+- Changed TypeScript/TSX syntax/transpile validation for all V92-modified TS/TSX files
+- Node syntax validation for changed validation scripts
+
+MANUAL/ENVIRONMENT-LIMITED
+- npm install/build/typecheck could not complete in the execution environment because dependency installation timed out and the extracted ZIP did not contain node_modules. This is not presented as a successful full production build.
+
+KEY V92 FEATURES
+- Creator seller onboarding UI
+- Canonical creatorCommerceProfiles seller mapping
+- Server-side Razorpay Route Linked Account creation (v2/accounts)
+- Seller status/health lifecycle
+- Idempotent/duplicate-safe onboarding guard
+- Seller eligibility gate for marketplace publishing/checkout
+- Route webhook signature verification + deduplication
+- Master Admin seller management
+- V90/V89 compatibility preserved
+- No automatic creator transfers/payouts in V92

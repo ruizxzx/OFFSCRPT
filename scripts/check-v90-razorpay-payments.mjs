@@ -28,7 +28,7 @@ assert(!product.includes('confirmTestPayment'),'fake test payment is absent from
 assert(!commerce.includes('confirmTestPayment'),'fake test payment client helper is absent');
 assert(!product.includes('offscript_test'),'test provider is absent from buyer product UI');
 assert(!read('src/components/CommerceFoundationPanel.tsx').includes('TEST PURCHASE'),'fake test purchase button is absent');
-assert(pkg.version==='0.90.0','package version is 0.90.0');
+assert(/^0\.(?:9[0-9]|[1-9][0-9])\.\d+$/.test(pkg.version),'package version is V90+ compatible');
 assert(pkg.scripts['check:v90-razorpay-payments']==='node scripts/check-v90-razorpay-payments.mjs','V90 validator is registered');
 
 const srcFiles=[];
@@ -43,4 +43,4 @@ assert(!joined.includes('RAZORPAY_KEY_SECRET='),'no Razorpay secret assignment i
 assert(!joined.includes('RAZORPAY_WEBHOOK_SECRET='),'no webhook secret assignment is present in browser/public source');
 assert(!joined.includes('R2_PRODUCT_SECRET_ACCESS_KEY='),'no R2 secret assignment is present in browser/public source');
 
-console.log(process.exitCode?'V90 validation failed.':'V90 validation passed.');
+console.log(process.exitCode?'V90 validation failed.':'V90 compatibility validation passed.');

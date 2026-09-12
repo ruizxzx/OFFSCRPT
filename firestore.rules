@@ -1559,6 +1559,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /creatorCommerceProfiles/{creatorId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.creatorId == request.auth.uid);
+      allow write: if false;
+    }
+
     match /commerceAuditLogs/{eventId} {
       allow read: if isAdmin();
       allow write: if false;

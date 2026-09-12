@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '../../server/vercel-types.js';
 import crypto from 'node:crypto';
 import { getRazorpayConfig, isRazorpayConfigured, razorpayProvider, verifyCapturedPayment } from '../../server/razorpay.js';
+import { createLinkedAccount, fetchLinkedAccount, updateLinkedAccount, providerHealth, type RouteBusinessType } from '../../server/razorpay-route.js';
 
 const projectId = () => process.env.GOOGLE_CLOUD_PROJECT || process.env.VITE_FIREBASE_PROJECT_ID || 'krishficient-portfolio';
 const apiKey = () => process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
@@ -33,7 +34,7 @@ function firestoreResourceName(name:string){
   if(name.startsWith('projects/')) return name;
   if(name.startsWith(base)) return `projects/${projectId()}/databases/(default)/documents/${name.slice(base.length)}`;
   if(!name.includes('/')) return `projects/${projectId()}/databases/(default)/documents/${name}`;
-  if(/^(commerceProducts|commercePrices|commerceOrders|commercePayments|commerceRefunds|entitlements|creatorRevenue|creatorPayouts|commerceAuditLogs|commerceWebhookEvents|commerceIdempotency|users)\//.test(name)) return `projects/${projectId()}/databases/(default)/documents/${name}`;
+  if(/^(commerceProducts|commercePrices|commerceOrders|commercePayments|commerceRefunds|entitlements|creatorRevenue|creatorPayouts|commerceAuditLogs|commerceWebhookEvents|commerceIdempotency|creatorCommerceProfiles|users)\//.test(name)) return `projects/${projectId()}/databases/(default)/documents/${name}`;
   throw new Error(`Invalid Firestore document path: ${name}`);
 }
 function normalizeCommitWrites(writes:any[]){
@@ -65,7 +66,15 @@ async function fsCommit(token:string,writes:any[]){
   if(!r.ok){const text=await r.text(); throw new Error(`Firestore commit failed: ${r.status} ${text.slice(0,500)}`);}
   return r.json();
 }
-async function fsRunQuery(token:string, from:string, filters:any[]){const where=filters.length===1?{fieldFilter:filters[0]}:{compositeFilter:{op:'AND',filters:filters.map(fieldFilter=>({fieldFilter}))}}; const r=await fetch(`${firestoreBase()}:runQuery`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({structuredQuery:{from:[{collectionId:from}],where}})}); if(!r.ok)throw new Error(`Firestore query failed: ${r.status}`); const rows:any[]=await r.json(); return rows.filter(x=>x.document).map(x=>({name:x.document.name,fields:decodeFields(x.document.fields)}));}
+async function fsRunQuery(token:string, from:string, filters:any[]){
+  const structuredQuery:any={from:[{collectionId:from}]};
+  if(filters.length===1) structuredQuery.where={fieldFilter:filters[0]};
+  else if(filters.length>1) structuredQuery.where={compositeFilter:{op:'AND',filters:filters.map(fieldFilter=>({fieldFilter}))}};
+  const r=await fetch(`${firestoreBase()}:runQuery`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({structuredQuery})});
+  if(!r.ok)throw new Error(`Firestore query failed: ${r.status}`);
+  const rows:any[]=await r.json();
+  return rows.filter(x=>x.document).map(x=>({name:x.document.name,fields:decodeFields(x.document.fields)}));
+}
 async function fsCount(token:string, collectionId:string){
   const r=await fetch(`${firestoreBase()}:runAggregationQuery`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({structuredAggregationQuery:{structuredQuery:{from:[{collectionId}]},aggregations:[{alias:'count',count:{}}]}})});
   if(!r.ok){const text=await r.text();throw new Error(`Firestore count failed: ${r.status} ${text.slice(0,300)}`);}
@@ -118,6 +127,11 @@ async function setProductStatus(token:string,uid:string,b:any){
   const product=await fsGet(token,`commerceProducts/${productId}`); if(!product) throw new Error('Product not found.');
   if(product.fields.creatorId!==uid) throw new Error('You do not own this product.');
   if(next==='active' && !(Array.isArray(product.fields.priceIds)&&product.fields.priceIds.length>0)) throw new Error('Add at least one price before activating the product.');
+  if(next==='active' && product.fields.creatorId!=='' && product.fields.creatorId!==uid) throw new Error('Product creator linkage is invalid.');
+  if(next==='active'){
+    const seller=await getSellerProfile(token,uid);
+    if(!seller?.fields?.sellerEnabled || !['active'].includes(String(seller.fields.onboardingStatus||''))) throw new Error('Complete seller onboarding and enable selling before publishing marketplace products.');
+  }
   const stamp=nowIso();
   await fsPatch(token,`commerceProducts/${productId}`,{status:next,updatedAt:stamp,...(next==='active'?{publishedAt:product.fields.publishedAt||stamp}:{}) ,...(next==='archived'?{archivedAt:stamp}:{})});
   return {product:{id:productId,...product.fields,status:next,updatedAt:stamp}};
@@ -130,6 +144,166 @@ async function createPrice(token:string,uid:string,b:any){
   await fsCommit(token,[{create:{name:`${firestoreBase()}/commercePrices/${priceId}`,fields:fields(price)}},{update:{name:`${firestoreBase()}/commerceProducts/${price.productId}`,fields:fields({priceIds:[...(Array.isArray(product.fields.priceIds)?product.fields.priceIds:[]),priceId],updatedAt:nowIso()})}}]); return {price};
 }
 
+
+
+const ROUTE_BUSINESS_TYPES = new Set<RouteBusinessType>([
+  'individual','proprietorship','partnership','llp','private_limited','public_limited','trust','society','ngo'
+]);
+
+function sellerIdFor(uid:string){ return `seller_${uid}`; }
+function sanitizeSellerStatus(status:string){ return ['not_started','collecting_information','creating_account','created','pending_review','active','suspended','rejected','error','reconciliation_required'].includes(status) ? status : 'error'; }
+
+function validateSellerInput(b:any){
+  const email=String(b.email||'').trim().toLowerCase();
+  const phone=String(b.phone||'').replace(/[^\d+]/g,'');
+  const legalBusinessName=String(b.legalBusinessName||'').trim();
+  const customerFacingBusinessName=String(b.customerFacingBusinessName||legalBusinessName).trim();
+  const contactName=String(b.contactName||'').trim();
+  const businessType=String(b.businessType||'').trim() as RouteBusinessType;
+  const category=String(b.category||'digital_goods').trim();
+  const subcategory=String(b.subcategory||'digital_products').trim();
+  const description=String(b.description||'Digital products sold through OFFSCRPT.').trim();
+  const street1=String(b.street1||'').trim();
+  const street2=String(b.street2||'').trim();
+  const city=String(b.city||'').trim();
+  const state=String(b.state||'').trim();
+  const postalCode=String(b.postalCode||'').trim();
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid business email.');
+  if(phone.replace(/\D/g,'').length<8 || phone.replace(/\D/g,'').length>15) throw new Error('Enter a valid business phone number.');
+  if(legalBusinessName.length<4) throw new Error('Legal business name must contain at least 4 characters.');
+  if(customerFacingBusinessName.length<1) throw new Error('Customer-facing business name is required.');
+  if(contactName.length<4) throw new Error('Contact name must contain at least 4 characters.');
+  if(!ROUTE_BUSINESS_TYPES.has(businessType)) throw new Error('Select a supported business type.');
+  if(!street1||!city||!state||!postalCode) throw new Error('Complete the registered business address.');
+  if(postalCode.length<4 || postalCode.length>20) throw new Error('Enter a valid postal code.');
+  return {email,phone,legalBusinessName,customerFacingBusinessName,contactName,businessType,category,subcategory,description,street1,street2,city,state,postalCode};
+}
+
+async function getSellerProfile(token:string,uid:string){
+  const sellerId=sellerIdFor(uid);
+  return fsGet(token,`creatorCommerceProfiles/${uid}`);
+}
+
+async function createSeller(token:string,uid:string,b:any){
+  const input=validateSellerInput(b);
+  const existing=await getSellerProfile(token,uid);
+  if(existing?.fields?.razorpayAccountId){
+    return {seller:{id:sellerIdFor(uid),...existing.fields},reused:true};
+  }
+  const started=nowIso();
+  const sellerId=sellerIdFor(uid);
+  try {
+    await fsCommit(token,[{
+      create:{name:`${firestoreBase()}/creatorCommerceProfiles/${uid}`,fields:fields({
+        creatorId:uid,sellerId,sellerEnabled:false,onboardingStatus:'creating_account',health:'pending',
+        email:input.email,phone:input.phone,legalBusinessName:input.legalBusinessName,
+        customerFacingBusinessName:input.customerFacingBusinessName,businessType:input.businessType,
+        category:input.category,subcategory:input.subcategory,description:input.description,
+        address:{street1:input.street1,street2:input.street2,city:input.city,state:input.state,postalCode:input.postalCode,country:'IN'},
+        referenceId:sellerId.replace(/^seller_/,'').slice(0,20),createdAt:started,updatedAt:started
+      })}
+    }]);
+  } catch (error:any) {
+    // A concurrent onboarding request may have created the canonical seller first.
+    const raced=await getSellerProfile(token,uid);
+    if(raced) return {seller:{id:sellerId,creatorId:uid,...raced.fields},reused:true};
+    throw error;
+  }
+  try{
+    const account=await createLinkedAccount({
+      email:input.email,phone:input.phone,legalBusinessName:input.legalBusinessName,
+      customerFacingBusinessName:input.customerFacingBusinessName,businessType:input.businessType,
+      referenceId:sellerId.replace(/^seller_/,'').slice(0,20),contactName:input.contactName,
+      category:input.category,subcategory:input.subcategory,description:input.description,
+      registeredAddress:{street1:input.street1,street2:input.street2,city:input.city,state:input.state,postalCode:input.postalCode,country:'IN'},
+      website:String(process.env.OFFSCRPT_PRODUCTION_URL||'https://offscrpt.vercel.app')
+    });
+    const accountId=String(account?.id||'');
+    if(!/^acc_/.test(accountId)) throw new Error('Razorpay did not return a Linked Account ID.');
+    const providerStatus=String(account?.status||'created');
+    const onboardingStatus=providerStatus==='suspended'?'suspended':'created';
+    const health=providerHealth(accountId,providerStatus);
+    const updated=nowIso();
+    await fsPatch(token,`creatorCommerceProfiles/${uid}`,{
+      razorpayAccountId:accountId,razorpayAccountStatus:providerStatus,
+      onboardingStatus,health,sellerEnabled:false,verifiedAt:undefined,updatedAt:updated
+    });
+    await fsCommit(token,[{
+      create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`seller:${uid}:created`)}`,fields:fields({
+        actorId:uid,actorType:'creator',targetType:'seller',targetId:sellerId,event:'seller_onboarding_account_created',
+        timestamp:updated,metadata:{provider:'razorpay',razorpayAccountId:accountId}
+      })}
+    }]);
+    return {seller:{id:sellerId,creatorId:uid,razorpayAccountId:accountId,razorpayAccountStatus:providerStatus,onboardingStatus,health,sellerEnabled:false},message:'Linked Account created. Complete any required Razorpay verification/KYC before selling is enabled.'};
+  }catch(error:any){
+    await fsPatch(token,`creatorCommerceProfiles/${uid}`,{onboardingStatus:'reconciliation_required',health:'reconciliation_required',lastError:String(error?.message||'Seller creation failed.').slice(0,500),updatedAt:nowIso()});
+    throw error;
+  }
+}
+
+async function getSeller(token:string,uid:string){
+  const seller=await getSellerProfile(token,uid);
+  if(!seller)return {seller:{id:sellerIdFor(uid),creatorId:uid,sellerEnabled:false,onboardingStatus:'not_started',health:'not_started'}};
+  return {seller:{id:sellerIdFor(uid),...seller.fields}};
+}
+
+async function refreshSeller(token:string,uid:string){
+  const seller=await getSellerProfile(token,uid);
+  if(!seller) return getSeller(token,uid);
+  const accountId=String(seller.fields.razorpayAccountId||'');
+  if(!accountId) return getSeller(token,uid);
+  const account=await fetchLinkedAccount(accountId);
+  const providerStatus=String(account?.status||'created');
+  const health=providerHealth(accountId,providerStatus);
+  const onboardingStatus=providerStatus==='suspended'?'suspended':(seller.fields.sellerEnabled===true?'active':'pending_review');
+  const stamp=nowIso();
+  await fsPatch(token,`creatorCommerceProfiles/${uid}`,{razorpayAccountStatus:providerStatus,health,onboardingStatus,updatedAt:stamp});
+  return {seller:{id:sellerIdFor(uid),...seller.fields,razorpayAccountStatus:providerStatus,health,onboardingStatus,updatedAt:stamp},provider:{accountId,status:providerStatus}};
+}
+
+async function disableSeller(token:string,uid:string){
+  const seller=await getSellerProfile(token,uid);
+  if(!seller) throw new Error('Seller profile not found.');
+  const stamp=nowIso();
+  await fsPatch(token,`creatorCommerceProfiles/${uid}`,{sellerEnabled:false,onboardingStatus:'created',updatedAt:stamp});
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`seller:${uid}:disabled:${stamp}`)}`,fields:fields({actorId:uid,actorType:'creator',targetType:'seller',targetId:sellerIdFor(uid),event:'seller_disabled',timestamp:stamp,metadata:{}})}}]);
+  return {seller:{id:sellerIdFor(uid),...seller.fields,sellerEnabled:false,onboardingStatus:'created',updatedAt:stamp}};
+}
+
+async function enableSeller(token:string,uid:string){
+  const seller=await getSellerProfile(token,uid);
+  if(!seller?.fields?.razorpayAccountId) throw new Error('Connect your Razorpay seller account first.');
+  if(String(seller.fields.razorpayAccountStatus||'')==='suspended') throw new Error('This Razorpay seller account is suspended.');
+  const account=await fetchLinkedAccount(String(seller.fields.razorpayAccountId));
+  if(String(account?.status||'created')==='suspended') throw new Error('Razorpay has suspended this seller account.');
+  const stamp=nowIso();
+  await fsPatch(token,`creatorCommerceProfiles/${uid}`,{sellerEnabled:true,onboardingStatus:'active',health:'ready',verifiedAt:stamp,updatedAt:stamp});
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`seller:${uid}:enabled:${stamp}`)}`,fields:fields({actorId:uid,actorType:'creator',targetType:'seller',targetId:sellerIdFor(uid),event:'seller_enabled',timestamp:stamp,metadata:{provider:'razorpay',razorpayAccountId:String(seller.fields.razorpayAccountId)}})}}]);
+  return {seller:{id:sellerIdFor(uid),...seller.fields,sellerEnabled:true,onboardingStatus:'active',health:'ready',updatedAt:stamp}};
+}
+
+async function adminListSellers(token:string,uid:string,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;}
+  const rows=await fsRunQuery(token,'creatorCommerceProfiles',[]);
+  return {sellers:rows.map(x=>({id:String(x.name).split('/').pop(),...x.fields}))};
+}
+
+async function adminSetSellerStatus(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;}
+  const creatorId=String(b.creatorId||'').trim(); const status=String(b.status||'').trim();
+  if(!creatorId||!['active','suspended','created'].includes(status)) throw new Error('Invalid seller status request.');
+  const seller=await getSellerProfile(token,creatorId); if(!seller) throw new Error('Seller profile not found.');
+  if(status==='active' && !seller.fields.razorpayAccountId) throw new Error('Seller does not have a Razorpay account.');
+  if(status==='active'){
+    const account=await fetchLinkedAccount(String(seller.fields.razorpayAccountId));
+    if(String(account?.status||'created')==='suspended') throw new Error('Razorpay has suspended this seller account.');
+  }
+  const enabled=status==='active';
+  const stamp=nowIso();
+  await fsPatch(token,`creatorCommerceProfiles/${creatorId}`,{sellerEnabled:enabled,onboardingStatus:status==='suspended'?'suspended':(enabled?'active':'created'),health:status==='suspended'?'suspended':(enabled?'ready':'pending'),updatedAt:stamp});
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`seller:${creatorId}:${status}:${stamp}`)}`,fields:fields({actorId:uid,actorType:'admin',targetType:'seller',targetId:sellerIdFor(creatorId),event:`seller_${status}`,timestamp:stamp,metadata:{}})}}]);
+  return getSeller(token,creatorId);
+}
 
 async function finalizeVerifiedRazorpayPayment(token:string,orderId:string,paymentId:string,uid?:string,eventKey?:string,providerEvent?:string){
   const order=await fsGet(token,`commerceOrders/${orderId}`);
@@ -194,6 +368,8 @@ async function createCheckout(token:string,uid:string,b:any){
   if(String(price.fields.billingType||'one_time')!=='one_time')throw new Error('Recurring products are not supported by V90 one-time checkout.');
   const amount=Number(price.fields.amount),currency=String(price.fields.currency||product.fields.currency||'INR').toUpperCase();
   razorpayProvider.amountSubunit(amount,currency);
+  const seller=await getSellerProfile(token,String(product.fields.creatorId||''));
+  if(!seller?.fields?.sellerEnabled || String(seller.fields.onboardingStatus||'')!=='active' || !seller.fields.razorpayAccountId) throw new Error('This creator is not currently enabled for marketplace selling.');
   const ownership=await fsRunQuery(token,'entitlements',[{field:{fieldPath:'userId'},op:'EQUAL',value:{stringValue:uid}},{field:{fieldPath:'resourceType'},op:'EQUAL',value:{stringValue:product.name.split('/').pop()}}]);
   if(ownership.some(x=>x.fields.status==='active')) throw new Error('You already own this product.');
   const key=String(b.idempotencyKey||'').trim(); if(key.length<8||key.length>200)throw new Error('Valid idempotencyKey is required.');
@@ -272,6 +448,41 @@ async function handleRazorpayWebhook(req:any,res:any){
     const existing=await fsGet(token,`commerceWebhookEvents/${eventDocId}`);
     if(!existing) await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({event:eventType,providerEventId:eventId,status:'received',createdAt:nowIso()})}}]);
   }
+  return res.status(200).json({received:true});
+}
+
+
+async function handleRazorpayRouteWebhook(req:any,res:any){
+  if(req.method!=='POST') return res.status(405).json({error:'Method not allowed'});
+  const raw=await readRawBody(req);
+  const signature=String(req.headers['x-razorpay-signature']||'');
+  if(!verifyRouteWebhook(raw,signature)) return res.status(401).json({error:'Invalid Route webhook signature.'});
+  let payload:any={}; try{payload=raw?JSON.parse(raw):{};}catch{return res.status(400).json({error:'Invalid webhook payload.'});}
+  const token=await serviceToken();
+  const eventId=String(req.headers['x-razorpay-event-id']||payload?.id||crypto.createHash('sha256').update(raw).digest('hex'));
+  const eventType=String(payload?.event||'');
+  const eventDocId=stableId('rp_route_evt',eventId);
+  if(!eventType) return res.status(200).json({received:true});
+  const existing=await fsGet(token,`commerceWebhookEvents/${eventDocId}`);
+  if(existing) return res.status(200).json({received:true,duplicate:true});
+  const accountId=String(payload?.account_id||payload?.payload?.transfer?.entity?.recipient||'');
+  const transfer=payload?.payload?.transfer?.entity;
+  const recipient=String(transfer?.recipient||accountId);
+  if(recipient){
+    const sellers=await fsRunQuery(token,'creatorCommerceProfiles',[{field:{fieldPath:'razorpayAccountId'},op:'EQUAL',value:{stringValue:recipient}}]);
+    if(sellers[0]){
+      const creatorId=String(sellers[0].fields.creatorId||String(sellers[0].name).split('/').pop());
+      await fsPatch(token,`creatorCommerceProfiles/${creatorId}`,{
+        lastRouteEvent:eventType,lastRouteEventAt:nowIso(),
+        lastTransferId:String(transfer?.id||''),lastTransferStatus:String(transfer?.status||''),
+        lastSettlementId:String(transfer?.recipient_settlement_id||'')
+      });
+    }
+  }
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({
+    event:eventType,provider:'razorpay_route',providerEventId:eventId,accountId,createdAt:nowIso(),
+    metadata:{transferId:String(transfer?.id||''),status:String(transfer?.status||'')}
+  })}}]);
   return res.status(200).json({received:true});
 }
 
@@ -414,7 +625,7 @@ async function listPublicPrices(token:string,productId:string){
 
 async function commerceDiagnostics(token:string,uid:string,email?:string,emailVerified?:boolean){
   if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))) { const error:any=new Error('Administrator access required.'); error.statusCode=403; throw error; }
-  const names=['commerceProducts','commercePrices','commerceOrders','commercePayments','commerceRefunds','entitlements','creatorRevenue','creatorPayouts','commerceAuditLogs','commerceWebhookEvents'];
+  const names=['commerceProducts','commercePrices','commerceOrders','commercePayments','commerceRefunds','entitlements','creatorRevenue','creatorPayouts','creatorCommerceProfiles','commerceAuditLogs','commerceWebhookEvents'];
   const entries=await Promise.all(names.map(async name=>{try{return [name,await fsCount(token,name),null] as const;}catch(error:any){return [name,null,String(error?.message||'Count failed')] as const;}}));
   return {generatedAt:nowIso(),counts:Object.fromEntries(entries.map(([name,count])=>[name,count??0])),errors:Object.fromEntries(entries.filter(([,count,error])=>count===null).map(([name,,error])=>[name,error]))};
 }
@@ -469,5 +680,6 @@ export default async function handler(req:VercelRequest,res:VercelResponse){
   }
   if(req.method!=='POST')return res.status(405).json({error:'Method not allowed'});
   if(action==='razorpayWebhook') return handleRazorpayWebhook(req,res);
-  try{const raw=await readRawBody(req); let body:any={}; try{body=raw?JSON.parse(raw):{};}catch{throw new Error('Invalid JSON request body.');} const identity=await verifyFirebaseToken(authHeader(req)), uid=identity.uid, token=await serviceToken(); let out:any; if(action==='createProduct')out=await createProduct(token,uid,body); else if(action==='createPrice')out=await createPrice(token,uid,body); else if(action==='setProductStatus')out=await setProductStatus(token,uid,body); else if(action==='setProductVisibility')out=await setProductVisibility(token,uid,body); else if(action==='createCheckout')out=await createCheckout(token,uid,body); else if(action==='confirmRazorpayPayment'||action==='verifyPayment')out=await confirmRazorpayPayment(token,uid,body); else if(action==='paymentStatus')out=await getRazorpayPaymentStatus(token,uid,body); else if(action==='checkAccess')out=await checkAccess(token,uid,body); else if(action==='diagnostics')out=await commerceDiagnostics(token,uid,identity.email,identity.emailVerified); else return res.status(400).json({error:'Unknown commerce action.'}); return res.status(200).json(out);}catch(e:any){const status=Number(e?.statusCode); return res.status(status>=400&&status<=599?status:400).json({error:e?.message||'Commerce request failed.'});}
+  if(action==='razorpayRouteWebhook') return handleRazorpayRouteWebhook(req,res);
+  try{const raw=await readRawBody(req); let body:any={}; try{body=raw?JSON.parse(raw):{};}catch{throw new Error('Invalid JSON request body.');} const identity=await verifyFirebaseToken(authHeader(req)), uid=identity.uid, token=await serviceToken(); let out:any; if(action==='createProduct')out=await createProduct(token,uid,body); else if(action==='createPrice')out=await createPrice(token,uid,body); else if(action==='setProductStatus')out=await setProductStatus(token,uid,body); else if(action==='setProductVisibility')out=await setProductVisibility(token,uid,body); else if(action==='createCheckout')out=await createCheckout(token,uid,body); else if(action==='createSeller')out=await createSeller(token,uid,body); else if(action==='getSeller')out=await getSeller(token,uid); else if(action==='refreshSeller')out=await refreshSeller(token,uid); else if(action==='enableSeller')out=await enableSeller(token,uid); else if(action==='disableSeller')out=await disableSeller(token,uid); else if(action==='adminListSellers')out=await adminListSellers(token,uid,identity.email,identity.emailVerified); else if(action==='adminSetSellerStatus')out=await adminSetSellerStatus(token,uid,body,identity.email,identity.emailVerified); else if(action==='confirmRazorpayPayment'||action==='verifyPayment')out=await confirmRazorpayPayment(token,uid,body); else if(action==='paymentStatus')out=await getRazorpayPaymentStatus(token,uid,body); else if(action==='checkAccess')out=await checkAccess(token,uid,body); else if(action==='diagnostics')out=await commerceDiagnostics(token,uid,identity.email,identity.emailVerified); else return res.status(400).json({error:'Unknown commerce action.'}); return res.status(200).json(out);}catch(e:any){const status=Number(e?.statusCode); return res.status(status>=400&&status<=599?status:400).json({error:e?.message||'Commerce request failed.'});}
 }
