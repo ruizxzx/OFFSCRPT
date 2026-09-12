@@ -3,11 +3,11 @@ import crypto from 'node:crypto';
 import type { PaymentProvider, RazorpayConfig } from './payment-provider.js';
 
 export function getRazorpayConfig():RazorpayConfig{
-  const keyId=String(process.env.RAZORPAY_KEY_ID||'');
-  const keySecret=String(process.env.RAZORPAY_KEY_SECRET||'');
-  const webhookSecret=String(process.env.RAZORPAY_WEBHOOK_SECRET||'');
+  const keyId=String(process.env.RAZORPAY_KEY_ID||'').trim();
+  const keySecret=String(process.env.RAZORPAY_KEY_SECRET||'').trim();
+  const webhookSecret=String(process.env.RAZORPAY_WEBHOOK_SECRET||'').trim();
   const environment=String(process.env.RAZORPAY_ENVIRONMENT||'').toLowerCase()==='production'?'production':'test';
-  if(!keyId||!keySecret||!process.env.RAZORPAY_ENVIRONMENT) throw new Error('Razorpay server credentials are not configured.');
+  if(!keyId||!keySecret||!process.env.RAZORPAY_ENVIRONMENT) throw new Error('Razorpay server credentials are not configured. Add RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_ENVIRONMENT to the same Vercel environment, then redeploy.');
   return {keyId,keySecret,webhookSecret,environment};
 }
 export function isRazorpayConfigured():boolean{
@@ -26,7 +26,13 @@ async function request(path:string,init:RequestInit={}){
   const text=await r.text(); let body:any={};
   try{body=text?JSON.parse(text):{};}catch{body={raw:text};}
   if(!r.ok){
-    const message=String(body?.error?.description||body?.message||`Razorpay API failed: ${r.status}`);
+    const providerMessage=String(body?.error?.description||body?.message||'');
+    if(r.status===401 || r.status===403 || /authentication|invalid.*key|invalid.*secret|unauthorized/i.test(providerMessage)){
+      const err:any=new Error('Razorpay authentication failed. Verify that RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are the matching Razorpay Test Mode credentials, with no quotes/spaces, then redeploy the Vercel production deployment.');
+      err.statusCode=502;
+      throw err;
+    }
+    const message=providerMessage||`Razorpay API failed: ${r.status}`;
     const err:any=new Error(message); err.statusCode=r.status>=500?503:400; throw err;
   }
   return body;
