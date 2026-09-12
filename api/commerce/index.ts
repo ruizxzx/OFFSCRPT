@@ -132,10 +132,21 @@ async function createPrice(token:string,uid:string,b:any){
 
 
 async function finalizeVerifiedRazorpayPayment(token:string,orderId:string,paymentId:string,uid?:string,eventKey?:string,providerEvent?:string){
-  const order=await fsGet(token,`commerceOrders/${orderId}`); const payment=await fsGet(token,`commercePayments/${String(order?.fields?.paymentId||'')}`);
+  const order=await fsGet(token,`commerceOrders/${orderId}`);
   if(!order) throw new Error('Order not found.');
   if(uid && order.fields.customerId!==uid) throw new Error('Order ownership check failed.');
-  const internalPaymentId=String(order.fields.paymentId||''); if(!internalPaymentId || !payment || payment.fields.customerId!==order.fields.customerId || payment.fields.orderId!==orderId) throw new Error('Payment linkage is invalid.');
+  let internalPaymentId=String(order.fields.paymentId||'');
+  let payment=internalPaymentId?await fsGet(token,`commercePayments/${internalPaymentId}`):null;
+  // Backward compatibility: early V90 orders could be missing paymentId linkage.
+  if(!payment){
+    const candidates=await fsRunQuery(token,'commercePayments',[{field:{fieldPath:'orderId'},op:'EQUAL',value:{stringValue:orderId}}]);
+    const matched=candidates.find(x=>String(x.fields.customerId||'')===String(order.fields.customerId||''))||candidates[0];
+    if(matched){
+      internalPaymentId=String(matched.name).split('/').pop()||'';
+      payment=matched;
+    }
+  }
+  if(!internalPaymentId || !payment || payment.fields.customerId!==order.fields.customerId || payment.fields.orderId!==orderId) throw new Error('Payment linkage is invalid.');
   if(String(payment.fields.provider||'')!=='razorpay' || String(payment.fields.razorpayOrderId||'')!==String(order.fields.razorpayOrderId||'')) throw new Error('Provider linkage is invalid.');
   if(order.fields.status==='paid'){
     const eid=Array.isArray(order.fields.entitlementIds)?String(order.fields.entitlementIds[0]||''):''; const ent=eid?await fsGet(token,`entitlements/${eid}`):null;
@@ -195,7 +206,7 @@ async function createCheckout(token:string,uid:string,b:any){
   const title=String(product.fields.title||'Untitled'), productId=product.name.split('/').pop()!, priceId=price.name.split('/').pop()!;
   const item={productId,priceId,quantity:1,unitAmount:amount,lineTotal:amount,title,type:String(product.fields.type||'digital_product')};
   const createdAt=nowIso();
-  const order:any={customerId:uid,creatorId:String(product.fields.creatorId||''),items:[item],subtotal:amount,discount:0,tax:0,fees:0,total:amount,currency,status:'pending_payment',createdAt,updatedAt:createdAt,provider:'razorpay',metadata:{paymentProvider:'razorpay',checkoutIdempotencyKey:key}};
+  const order:any={customerId:uid,creatorId:String(product.fields.creatorId||''),items:[item],subtotal:amount,discount:0,tax:0,fees:0,total:amount,currency,status:'pending_payment',paymentId,createdAt,updatedAt:createdAt,provider:'razorpay',metadata:{paymentProvider:'razorpay',checkoutIdempotencyKey:key}};
   const payment={orderId,customerId:uid,amount,currency,status:'pending',provider:'razorpay',testMode:String(process.env.RAZORPAY_ENVIRONMENT||'').toLowerCase()!=='production',createdAt,updatedAt:createdAt};
   const providerOrder=await razorpayProvider.request('/orders',{method:'POST',body:JSON.stringify({amount:razorpayProvider.amountSubunit(amount,currency),currency,receipt:`OFF_${orderId.slice(0,30)}`,notes:{offscrptOrderId:orderId,offscrptProductId:productId}})});
   const razorpayOrderId=String(providerOrder?.id||''); if(!razorpayOrderId)throw new Error('Razorpay did not return an order ID.');

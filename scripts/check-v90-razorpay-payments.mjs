@@ -17,6 +17,7 @@ assert(provider.includes('OFFSCRPT Commerce stores money in currency subunits al
 assert(provider.includes('verifyPaymentSignature') && provider.includes('createHmac'),'Checkout signature verification exists');
 assert(provider.includes('verifyWebhookSignature') && provider.includes('RAZORPAY_WEBHOOK_SECRET'),'Webhook signature verification exists');
 assert(api.includes("payment.captured"),'captured-payment webhook handling exists');
+assert(api.includes('paymentId,createdAt') && /const order:any=\{[^\n]*paymentId/.test(api),'canonical order stores its internal paymentId before payment finalization');
 assert(api.includes("finalizeVerifiedRazorpayPayment"),'canonical payment finalization exists');
 assert(api.includes("stableId('ent'"),'deterministic entitlement ID exists');
 assert(api.includes("stableId('rp_evt'"),'webhook deduplication identifier exists');
