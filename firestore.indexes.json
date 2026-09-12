@@ -237,6 +237,58 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "commerceVendorLedger",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "creatorId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effectiveAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "creatorPayouts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "creatorId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "creatorPayouts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "razorpayTransferId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "commerceVendorLedger",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "payoutId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "entryType",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

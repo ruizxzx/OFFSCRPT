@@ -1,0 +1,41 @@
+OFFSCRPT V94.0.0 — BUILD VALIDATION
+
+SOURCE: supplied OFFSCRPT V93.0.0 archive
+TARGET: OFFSCRPT V94.0.0 — VENDOR BALANCE + PAYOUT ENGINE
+
+STATIC VALIDATION
+PASS: V94 validator — 34/34
+PASS: V92 compatibility validator — 19/19
+PASS: V93 compatibility validator — 35/35
+PASS: syntax parser — 138 TS/TSX files parsed
+PASS: export validation — 138 source files scanned
+PASS: identifier validation — 138 TS/TSX files scanned
+PASS: Firestore rules validation — 381 braces, default deny present
+PASS: schema validation — 12 blueprint entities validated
+PASS: runtime pattern validation — 138 active source files scanned
+PASS: commerce validation
+PASS: V94 Route transfer source integration
+PASS: V94 payout ledger/balance/static security checks
+
+FUNCTIONAL/SOURCE CHANGES
+- V94 vendor ledger and versioned balance snapshot architecture
+- pending/available/reserved/paid/negative balance buckets
+- 7-day default hold and ₹100 default minimum payout (configurable server-side)
+- idempotent payout requests and atomic reservation path
+- server-side Razorpay Route direct transfer integration using current /v1/transfers contract
+- Route transfer fetch/reconciliation
+- processed/failed/reversed/partial-reversal webhook handling
+- refund-to-vendor-ledger integration
+- creator Earnings + Payouts dashboard
+- Master Admin payout operations
+- seller activation UI now blocks ACTIVATE when Razorpay account is missing/suspended
+- Firestore rules/indexes for V94
+- V94 documentation/release notes
+
+FULL INSTALL/BUILD LIMITATION
+npm ci was attempted, but the container dependency installation timed out against the package registry. A subsequent offline attempt confirmed the npm cache did not contain all required tarballs. Therefore a full dependency-backed npm run typecheck / npm run build was NOT claimed as passed.
+
+A system TypeScript 5.8.3 parser was used for syntax checking. Existing application dependencies were unavailable in node_modules during that check, so dependency-related type errors cannot be used as a production-build result.
+
+EXTERNAL PREREQUISITE
+Razorpay Route Direct Transfers are an on-demand capability. Live payout execution requires Route transfer capability to be activated for the Razorpay merchant account.

@@ -233,3 +233,32 @@ export async function reconcileCommission(orderId:string):Promise<{allocation:Fi
 export interface AdminSellerRow extends CreatorSellerProfile { id:string; }
 export async function adminListCreatorSellers(): Promise<{sellers:AdminSellerRow[]}> { return callApi('adminListSellers'); }
 export async function adminSetCreatorSellerStatus(creatorId:string,status:'active'|'suspended'|'created'): Promise<{seller:CreatorSellerProfile}> { return callApi('adminSetSellerStatus',{creatorId,status}); }
+
+
+export interface CreatorBalanceSummary {
+  creatorId:string; currency:string; pendingBalancePaise:number; availableBalancePaise:number; reservedBalancePaise:number; paidOutBalancePaise:number; totalEarnedPaise:number; totalRefundedPaise:number; totalWithdrawnPaise:number; negativeBalancePaise:number; withdrawablePaise:number; minimumPayoutPaise:number; payoutEnabled:boolean; payoutBlockedReason:string; sellerStatus:string; routeAccountStatus:string;
+}
+export interface CreatorPayout { id:string; payoutId:string; creatorId:string; sellerId:string; amountPaise:number; currency:string; status:string; requestedAt?:string; approvedAt?:string; submittedAt?:string; processedAt?:string; failedAt?:string; reversedAt?:string; razorpayAccountId?:string|null; razorpayTransferId?:string|null; ledgerReservationId?:string|null; ledgerDebitId?:string|null; idempotencyKey:string; failureCode?:string|null; failureMessage?:string|null; reconciliationStatus?:string; providerTransferStatus?:string; providerSettlementStatus?:string; createdAt:string; updatedAt:string; }
+export async function getCreatorBalance():Promise<CreatorBalanceSummary>{ return callApi('getCreatorBalance'); }
+export async function getCreatorPayouts():Promise<{payouts:CreatorPayout[]}>{ return callApi('getCreatorPayouts'); }
+export async function getCreatorPayout(payoutId:string):Promise<{payout:CreatorPayout}>{ return callApi('getPayout',{payoutId}); }
+export async function createCreatorPayout(amount:string,idempotencyKey?:string):Promise<{payout:CreatorPayout;balance:CreatorBalanceSummary}>{ return callApi('createPayout',{amount,idempotencyKey:idempotencyKey||`payout_${Date.now()}_${Math.random().toString(36).slice(2,14)}`}); }
+export async function adminListPayouts(filters:Record<string,unknown>={}):Promise<{payouts:CreatorPayout[]}>{ return callApi('adminListPayouts',filters); }
+export async function adminApprovePayout(payoutId:string):Promise<{payout:CreatorPayout;balance?:CreatorBalanceSummary}>{ return callApi('approvePayout',{payoutId}); }
+export async function adminRejectPayout(payoutId:string,reason?:string):Promise<{payout:CreatorPayout;balance?:CreatorBalanceSummary}>{ return callApi('rejectPayout',{payoutId,reason}); }
+export async function adminReconcilePayout(payoutId:string):Promise<any>{ return callApi('reconcilePayout',{payoutId}); }
+
+
+export interface FinanceReport {
+  summary:any;
+  previousSummary:any;
+  comparison:{grossSales:number|null;platformCommission:number|null;creatorNet:number|null;refunds:number|null;payouts:number|null};
+  series:{revenue:any[];commission:any[];creatorNet:any[];payouts:any[];refunds:any[]};
+  meta:any;
+}
+export interface FinanceDimensionRow { id:string; [key:string]:any; }
+export interface FinanceHealth {status:string;healthy:number;warnings:number;critical:number;issues:any[];period:any;generatedAt:string;recordsScanned:any;}
+export async function getFinanceReport(input:Record<string,unknown>):Promise<FinanceReport>{ return callApi('getFinanceSummary',input); }
+export async function getFinanceHealth(input:Record<string,unknown>):Promise<FinanceHealth>{ return callApi('getFinanceHealth',input); }
+export async function getFinanceDimension(dimension:'creator'|'product'|'order'|'payout'|'refund',input:Record<string,unknown>):Promise<{rows:FinanceDimensionRow[];generatedAt:string;period:any}>{ return callApi(`get${dimension.charAt(0).toUpperCase()+dimension.slice(1)}Finance`,input); }
+export async function exportFinanceCsv(input:Record<string,unknown>):Promise<{filename:string;csv:string;generatedAt:string;period:any;schemaVersion:string}>{ return callApi('exportFinance',input); }

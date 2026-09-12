@@ -68,9 +68,45 @@ async function request(path: string, init: RequestInit = {}) {
     const message = String(body?.error?.description || body?.message || `Razorpay Route API failed (${response.status}).`);
     const error: any = new Error(message);
     error.statusCode = response.status === 401 || response.status === 403 ? 502 : (response.status >= 500 ? 503 : 400);
+    error.providerStatus = response.status;
+    error.providerBody = body;
     throw error;
   }
   return body;
+}
+
+async function requestV1(path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set('Authorization', authHeader());
+  headers.set('Content-Type', 'application/json');
+  const response = await fetch(`https://api.razorpay.com/v1${path}`, { ...init, headers });
+  const raw = await response.text();
+  let body: any = {};
+  try { body = raw ? JSON.parse(raw) : {}; } catch { body = { raw }; }
+  if (!response.ok) {
+    const message = String(body?.error?.description || body?.message || `Razorpay Route API failed (${response.status}).`);
+    const error: any = new Error(message);
+    error.statusCode = response.status === 401 || response.status === 403 ? 502 : (response.status >= 500 ? 503 : 400);
+    error.providerStatus = response.status;
+    error.providerBody = body;
+    throw error;
+  }
+  return body;
+}
+
+export async function createDirectTransfer(input: { accountId: string; amountPaise: number; currency?: string; notes?: Record<string, string> }) {
+  const accountId = cleanText(input.accountId, 32);
+  if (!/^acc_[A-Za-z0-9]+$/.test(accountId)) throw new Error('Invalid Razorpay Linked Account ID.');
+  if (!Number.isSafeInteger(input.amountPaise) || input.amountPaise < 100) throw new Error('Transfer amount must be at least ₹1.');
+  const currency = cleanText(input.currency || 'INR', 3).toUpperCase();
+  if (currency !== 'INR') throw new Error('Razorpay Route transfers support INR only.');
+  return requestV1('/transfers', { method: 'POST', body: JSON.stringify({ account: accountId, amount: input.amountPaise, currency, ...(input.notes ? {notes: input.notes} : {}) }) });
+}
+
+export async function fetchTransfer(transferId: string) {
+  const id = cleanText(transferId, 64);
+  if (!/^trf_[A-Za-z0-9]+$/.test(id)) throw new Error('Invalid Razorpay transfer ID.');
+  return requestV1(`/transfers/${encodeURIComponent(id)}`, { method: 'GET' });
 }
 
 export async function createLinkedAccount(input: LinkedAccountInput) {

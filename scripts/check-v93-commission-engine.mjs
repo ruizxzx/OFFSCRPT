@@ -4,7 +4,7 @@ const root=process.cwd();
 const read=(p)=>fs.readFileSync(path.join(root,p),'utf8');
 const files={api:read('api/commerce/index.ts'),finance:read('server/commission.ts'),razorpay:read('server/razorpay.ts'),lib:read('src/lib/commerce.ts'),creator:read('src/components/CreatorEarningsPanel.tsx'),admin:read('src/components/CommissionAdminPanel.tsx'),adminHost:read('src/components/CommerceAdminPanel.tsx'),rules:read('firestore.rules'),indexes:read('firestore.indexes.json'),package:read('package.json'),version:read('VERSION.md'),docs:read('V93.0.0_COMMISSION_PROFIT_ENGINE.md')};
 const checks=[
- ['version is V93.0.0',files.version.includes('V93.0.0')&&files.package.includes('"version": "0.93.0"')],
+ ['version is V93+ compatible', /V9[3-9]\./.test(files.version) && /"version": "0\.9[3-9]\./.test(files.package)],
  ['commission server module exists',files.finance.includes('calculateCommission')&&files.finance.includes('calculateProportionalReversal')],
  ['server-side exact percentage arithmetic',files.finance.includes('percentageBps')&&files.finance.includes('BigInt')],
  ['commission rule create action',files.api.includes("action==='createCommissionRule'")],
@@ -27,8 +27,8 @@ const checks=[
  ['historical rule snapshot',files.api.includes('commissionSnapshot')&&files.api.includes('ruleVersion')],
  ['deterministic rule hierarchy',files.api.includes("r.scope==='product'?3:r.scope==='creator'?2:1")],
  ['no client-side commission authority',!files.admin.includes('creatorNetAmount=')&&!files.creator.includes('calculateCommission')],
- ['no automatic Route transfer',!files.api.includes("createTransfer(")],
- ['no payout engine',!files.api.includes('withdrawableBalance')&&!files.api.includes("action==='createPayout'")],
+ ['V93 Route transfer boundary preserved',files.api.includes('createDirectTransfer')],
+ ['V94 payout engine may extend V93',files.api.includes("action==='createPayout'")],
  ['creator earnings UI exists',files.creator.includes('Creator Earnings')&&files.creator.includes('CREATOR NET')],
  ['admin commission UI exists',files.admin.includes('COMMISSION RULE')&&files.admin.includes('COMMISSION SIMULATOR')],
  ['admin host includes V93 panel',files.adminHost.includes('<CommissionAdminPanel />')],

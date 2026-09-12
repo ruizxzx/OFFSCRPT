@@ -1603,5 +1603,17 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // V94 Vendor Balance + Payout Engine. All financial mutations are server-authoritative.
+    match /commerceVendorLedger/{ledgerId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.creatorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /creatorCommerceBalances/{balanceId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.creatorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+
   }
 }

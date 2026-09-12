@@ -1,3 +1,5 @@
+# V95.0.0 — ADMIN FINANCE + REVENUE INTELLIGENCE
+
 ## V88.0.6
 My Purchases and secure digital-product downloads are available from `#purchases` / the authenticated account drawer.
 
@@ -375,3 +377,4 @@ Question-page runtime hardening: fixed React hook ordering for the QuestionView 
 ## V81 Universal Knowledge Engine
 
 V81 adds the user-facing Knowledge, Research and My Vault surfaces on top of the V80 Intelligence Core. Use `#knowledge`, `#research` and `#vault` or the Command Palette. See `V81.0.0_UNIVERSAL_KNOWLEDGE_ENGINE.md` and `BUILD_VALIDATION.txt` for scope and verification.
+

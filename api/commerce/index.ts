@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '../../server/vercel-types.js';
 import crypto from 'node:crypto';
 import { getRazorpayConfig, isRazorpayConfigured, razorpayProvider, verifyCapturedPayment } from '../../server/razorpay.js';
-import { createLinkedAccount, fetchLinkedAccount, updateLinkedAccount, providerHealth, type RouteBusinessType } from '../../server/razorpay-route.js';
+import { createLinkedAccount, fetchLinkedAccount, updateLinkedAccount, providerHealth, createDirectTransfer, fetchTransfer, type RouteBusinessType } from '../../server/razorpay-route.js';
 import { calculateCommission, calculateProportionalReversal, majorFromSubunits, subunitsFromMajor, validateCommissionRuleInput, type CommissionRule, type CommissionRuleInput, type CommissionRuleScope } from '../../server/commission.js';
 
 const projectId = () => process.env.GOOGLE_CLOUD_PROJECT || process.env.VITE_FIREBASE_PROJECT_ID || 'krishficient-portfolio';
@@ -22,7 +22,7 @@ function value(v:any):any { if(v===null) return {nullValue:'NULL_VALUE'}; if(typ
 function fields(obj:any){const out:any={}; for(const [k,v] of Object.entries(obj)){ if(v!==undefined) out[k]=value(v); } return out;}
 function decode(v:any):any { if(!v) return null; if('stringValue'in v)return v.stringValue; if('integerValue'in v)return Number(v.integerValue); if('doubleValue'in v)return v.doubleValue; if('booleanValue'in v)return v.booleanValue; if('timestampValue'in v)return v.timestampValue; if('nullValue'in v)return null; if('arrayValue'in v)return (v.arrayValue.values||[]).map(decode); if('mapValue'in v){const o:any={}; for(const [k,x] of Object.entries(v.mapValue.fields||{}))o[k]=decode(x); return o;} return undefined; }
 function decodeFields(fs:any={}){const o:any={}; for(const [k,v] of Object.entries(fs))o[k]=decode(v); return o;}
-async function fsGet(token:string,name:string){const r=await fetch(`${firestoreBase()}/${name}`,{headers:{Authorization:`Bearer ${token}`}}); if(r.status===404)return null; if(!r.ok)throw new Error(`Firestore read failed: ${r.status}`); const j:any=await r.json(); return {name:j.name,fields:decodeFields(j.fields)};}
+async function fsGet(token:string,name:string){const r=await fetch(`${firestoreBase()}/${name}`,{headers:{Authorization:`Bearer ${token}`}}); if(r.status===404)return null; if(!r.ok)throw new Error(`Firestore read failed: ${r.status}`); const j:any=await r.json(); return {name:j.name,fields:decodeFields(j.fields),updateTime:j.updateTime};}
 async function fsCreate(token:string,name:string,obj:any){const parent=name.split('/').slice(0,-1).join('/'); const id=name.split('/').pop()!; const r=await fetch(`${firestoreBase()}/${parent}?documentId=${encodeURIComponent(id)}`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({fields:fields(obj)})}); if(r.status===409)return false; if(!r.ok)throw new Error(`Firestore create failed: ${r.status}`); return true;}
 async function fsPatch(token:string,name:string,obj:any){const params=new URLSearchParams(); for(const k of Object.keys(obj))params.append('updateMask.fieldPaths',k); const r=await fetch(`${firestoreBase()}/${name}?${params.toString()}`,{method:'PATCH',headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({fields:fields(obj)})}); if(!r.ok)throw new Error(`Firestore update failed: ${r.status}`); return true;}
 function firestoreResourceName(name:string){
@@ -35,7 +35,7 @@ function firestoreResourceName(name:string){
   if(name.startsWith('projects/')) return name;
   if(name.startsWith(base)) return `projects/${projectId()}/databases/(default)/documents/${name.slice(base.length)}`;
   if(!name.includes('/')) return `projects/${projectId()}/databases/(default)/documents/${name}`;
-  if(/^(commerceProducts|commercePrices|commerceOrders|commercePayments|commerceRefunds|entitlements|creatorRevenue|creatorPayouts|commerceAuditLogs|commerceWebhookEvents|commerceIdempotency|creatorCommerceProfiles|commerceCommissionRules|commerceFinancialAllocations|users)\//.test(name)) return `projects/${projectId()}/databases/(default)/documents/${name}`;
+  if(/^(commerceProducts|commercePrices|commerceOrders|commercePayments|commerceRefunds|entitlements|creatorRevenue|creatorPayouts|commerceAuditLogs|commerceWebhookEvents|commerceIdempotency|creatorCommerceProfiles|commerceCommissionRules|commerceFinancialAllocations|commerceVendorLedger|creatorCommerceBalances|siteConfig|users)\//.test(name)) return `projects/${projectId()}/databases/(default)/documents/${name}`;
   throw new Error(`Invalid Firestore document path: ${name}`);
 }
 function normalizeCommitWrites(writes:any[]){
@@ -76,6 +76,610 @@ async function fsRunQuery(token:string, from:string, filters:any[]){
   const rows:any[]=await r.json();
   return rows.filter(x=>x.document).map(x=>({name:x.document.name,fields:decodeFields(x.document.fields)}));
 }
+
+
+async function fsRunQueryAdvanced(token:string, from:string, filters:any[] = [], orderByField?:string, direction:'ASCENDING'|'DESCENDING'='DESCENDING', limitCount?:number){
+  const structuredQuery:any={from:[{collectionId:from}]};
+  if(filters.length===1) structuredQuery.where={fieldFilter:filters[0]};
+  else if(filters.length>1) structuredQuery.where={compositeFilter:{op:'AND',filters:filters.map(fieldFilter=>({fieldFilter}))}};
+  if(orderByField) structuredQuery.orderBy=[{field:{fieldPath:orderByField},direction}];
+  if(Number.isSafeInteger(limitCount)&&Number(limitCount)>0) structuredQuery.limit=Math.min(Number(limitCount),500);
+  const r=await fetch(`${firestoreBase()}:runQuery`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({structuredQuery})});
+  if(!r.ok){const text=await r.text();throw new Error(`Firestore query failed: ${r.status} ${text.slice(0,500)}`);}
+  const rows:any[]=await r.json();
+  return rows.filter(x=>x.document).map(x=>({name:x.document.name,fields:decodeFields(x.document.fields)}));
+}
+
+function v95Iso(value:any){
+  const d=new Date(value);
+  if(!Number.isFinite(d.getTime())) return null;
+  return d.toISOString();
+}
+function v95Paise(value:any){
+  const n=Number(value);
+  return Number.isSafeInteger(n)?n:null;
+}
+function v95Major(value:any){
+  const n=v95Paise(value);
+  return n===null?0:n/100;
+}
+function v95SafeSum(rows:any[], field:string){
+  return rows.reduce((sum,row)=>sum+(v95Paise(row?.fields?.[field])??0),0);
+}
+function v95Status(value:any){return String(value||'').trim().toLowerCase();}
+function v95InRange(value:any, from:string, to:string){
+  const iso=v95Iso(value); return !!iso && iso>=from && iso<to;
+}
+function v95PercentChange(current:number, previous:number){
+  if(previous===0) return current===0?0:null;
+  return ((current-previous)/Math.abs(previous))*100;
+}
+function v95ReportWindow(body:any){
+  const now=new Date();
+  const to=v95Iso(body?.to||now.toISOString())!;
+  let fromRaw=body?.from;
+  if(!fromRaw){
+    const d=new Date(to);
+    d.setUTCDate(d.getUTCDate()-29);
+    fromRaw=d.toISOString();
+  }
+  const from=v95Iso(fromRaw);
+  if(!from||!v95Iso(to)||from>=to) throw v94PayoutError('INVALID_DATE_RANGE','Invalid finance report date range.');
+  return {from, to:v95Iso(to)!, timezone:String(body?.timezone||'Asia/Kolkata'), currency:String(body?.currency||'INR').toUpperCase()};
+}
+function v95PreviousWindow(from:string,to:string){
+  const start=new Date(from).getTime(), end=new Date(to).getTime(), span=end-start;
+  return {from:new Date(start-span).toISOString(),to:new Date(start).toISOString()};
+}
+async function v95LoadFinancialData(token:string, window:{from:string;to:string}, creatorId?:string, productId?:string){
+  const equalCreator=creatorId?[{field:{fieldPath:'creatorId'},op:'EQUAL',value:{stringValue:creatorId}}]:[];
+  const equalProduct=productId?[{field:{fieldPath:'productId'},op:'EQUAL',value:{stringValue:productId}}]:[];
+  const paidOrders=await fsRunQueryAdvanced(token,'commerceOrders',[{field:{fieldPath:'status'},op:'EQUAL',value:{stringValue:'paid'}},...equalCreator], 'paidAt','DESCENDING',500);
+  const allocations=await fsRunQueryAdvanced(token,'commerceFinancialAllocations',[...equalCreator,...equalProduct], 'createdAt','DESCENDING',500);
+  const refunds=await fsRunQueryAdvanced(token,'commerceRefunds',[], 'createdAt','DESCENDING',500);
+  const payouts=await fsRunQueryAdvanced(token,'creatorPayouts',[...equalCreator], 'createdAt','DESCENDING',500);
+  const ledger=await fsRunQueryAdvanced(token,'commerceVendorLedger',[...equalCreator], 'effectiveAt','DESCENDING',500);
+  const allocationByOrder=new Map<string,any>(); for(const r of allocations){const oid=String(r.fields?.orderId||''); if(oid) allocationByOrder.set(oid,r.fields);}
+  const filteredOrders=paidOrders.filter(r=>v95InRange(r.fields?.paidAt||r.fields?.createdAt,window.from,window.to) && (!productId || (Array.isArray(r.fields?.items)&&r.fields.items.some((i:any)=>String(i?.productId||'')===productId))));
+  const filteredAllocations=allocations.filter(r=>v95InRange(r.fields?.createdAt||r.fields?.updatedAt,window.from,window.to));
+  const filteredRefunds=refunds.filter(r=>{
+    const f=r.fields||{}; if(!v95InRange(f.updatedAt||f.createdAt,window.from,window.to)) return false;
+    if(!creatorId&&!productId) return true;
+    const a=allocationByOrder.get(String(f.orderId||'')); return !!a && (!creatorId||String(a.creatorId||'')===creatorId) && (!productId||String(a.productId||'')===productId);
+  });
+  return {paidOrders:filteredOrders, allocations:filteredAllocations,
+    refunds:filteredRefunds,
+    payouts:payouts.filter(r=>v95InRange(r.fields?.processedAt||r.fields?.createdAt,window.from,window.to)),
+    ledger:ledger.filter(r=>v95InRange(r.fields?.effectiveAt||r.fields?.createdAt,window.from,window.to)),
+    balances:creatorId ? await fsRunQueryAdvanced(token,'creatorCommerceBalances',[{field:{fieldPath:'creatorId'},op:'EQUAL',value:{stringValue:creatorId}}], 'updatedAt','DESCENDING',20) : []};
+}
+function v95AllocationAmounts(rows:any[]){
+  return rows.reduce((acc,row)=>{
+    const f=row.fields||{};
+    const currency=String(f.currency||'INR').toUpperCase();
+    if(currency!=='INR') return acc;
+    acc.gross += v95Paise(f.grossAmountSubunits??f.grossAmount*100)??0;
+    acc.commission += v95Paise(f.platformCommissionAmountSubunits??(Number(f.platformCommissionAmount||0)*100))??0;
+    acc.creatorNet += v95Paise(f.creatorNetAmountSubunits??(Number(f.creatorNetAmount||0)*100))??0;
+    return acc;
+  },{gross:0,commission:0,creatorNet:0});
+}
+function v95PaidOrderAmounts(rows:any[]){
+  return rows.reduce((acc,row)=>{
+    const f=row.fields||{};
+    if(String(f.currency||'INR').toUpperCase()!=='INR') return acc;
+    const gross=Number(f.total||0);
+    if(Number.isSafeInteger(gross)) acc.gross+=gross*100;
+    acc.count+=1;
+    return acc;
+  },{gross:0,count:0});
+}
+function v95RefundAmounts(rows:any[]){
+  return rows.reduce((acc,row)=>{
+    const f=row.fields||{};
+    if(String(f.currency||'INR').toUpperCase()!=='INR') return acc;
+    acc.amount += v95Paise(f.amountSubunits??(Number(f.amount||0)*100))??0;
+    acc.count += 1;
+    return acc;
+  },{amount:0,count:0});
+}
+function v95PayoutAmounts(rows:any[]){
+  return rows.reduce((acc,row)=>{
+    const f=row.fields||{};
+    if(String(f.currency||'INR').toUpperCase()!=='INR') return acc;
+    const amount=v95Paise(f.amountPaise)??0;
+    const status=v95Status(f.status);
+    if(status==='processed') {acc.processed+=amount; acc.processedCount+=1;}
+    if(status==='failed') {acc.failed+=amount; acc.failedCount+=1;}
+    if(status==='reversed') {acc.reversed+=amount; acc.reversedCount+=1;}
+    acc.requestedCount+=1;
+    return acc;
+  },{processed:0,failed:0,reversed:0,processedCount:0,failedCount:0,reversedCount:0,requestedCount:0});
+}
+function v95LedgerOutstanding(rows:any[]){
+  const out={pending:0,available:0,reserved:0,paid:0,negative:0};
+  for(const row of rows){
+    const f=row.fields||{};
+    const amount=Math.abs(v95Paise(f.amountPaise??f.amountSubunits)??0);
+    const bucket=String(f.balanceBucket||'').toLowerCase();
+    const type=v95Status(f.entryType);
+    const dir=v95Status(f.entryDirection);
+    const signed=(dir==='debit'||type.includes('debit')||type.includes('reversal')||type.includes('refund'))?-amount:amount;
+    if(bucket==='pending') out.pending+=signed;
+    else if(bucket==='available') out.available+=signed;
+    else if(bucket==='reserved') out.reserved+=signed;
+    else if(bucket==='paid') out.paid+=signed;
+    else if(bucket==='negative') out.negative+=signed;
+  }
+  return out;
+}
+function v95Series(rows:any[], dateField:string, amountResolver:(row:any)=>number, from:string, to:string, groupBy:string){
+  const map=new Map<string,number>();
+  for(const row of rows){
+    const iso=v95Iso(row?.fields?.[dateField]||row?.fields?.createdAt); if(!iso||iso<from||iso>=to) continue;
+    const d=new Date(iso); let key:string;
+    if(groupBy==='month') key=`${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+    else if(groupBy==='week'){const day=(d.getUTCDay()+6)%7; const start=new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()-day)); key=start.toISOString().slice(0,10);}
+    else key=iso.slice(0,10);
+    map.set(key,(map.get(key)||0)+amountResolver(row));
+  }
+  return [...map.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([period,amountPaise])=>({period,amountPaise,amount:amountPaise/100}));
+}
+function v95MetricSummary(window:any,data:any){
+  const order=v95PaidOrderAmounts(data.paidOrders);
+  const alloc=v95AllocationAmounts(data.allocations);
+  const refunds=v95RefundAmounts(data.refunds);
+  const payout=v95PayoutAmounts(data.payouts);
+  const netSales=Math.max(0,order.gross-refunds.amount);
+  const netRevenue=Math.max(0,alloc.commission);
+  const ledger=v95LedgerOutstanding(data.ledger);
+  return {
+    currency:'INR',
+    grossSalesPaise:order.gross,
+    grossSales:v95Major(order.gross),
+    paidOrders:order.count,
+    averageOrderValuePaise:order.count?Math.floor(order.gross/order.count):0,
+    averageOrderValue:order.count?order.gross/order.count/100:0,
+    platformCommissionPaise:alloc.commission,
+    platformCommission:v95Major(alloc.commission),
+    creatorNetPaise:alloc.creatorNet,
+    creatorNet:v95Major(alloc.creatorNet),
+    refundedAmountPaise:refunds.amount,
+    refundedAmount:v95Major(refunds.amount),
+    refundCount:refunds.count,
+    refundRate:order.gross>0?(refunds.amount/order.gross)*100:0,
+    netSalesAfterRefundsPaise:netSales,
+    netSalesAfterRefunds:v95Major(netSales),
+    pendingCreatorLiabilityPaise:Math.max(0,ledger.pending),
+    pendingCreatorLiability:v95Major(Math.max(0,ledger.pending)),
+    availableCreatorLiabilityPaise:Math.max(0,ledger.available),
+    availableCreatorLiability:v95Major(Math.max(0,ledger.available)),
+    reservedCreatorLiabilityPaise:Math.max(0,ledger.reserved),
+    reservedCreatorLiability:v95Major(Math.max(0,ledger.reserved)),
+    paidOutToCreatorsPaise:payout.processed,
+    paidOutToCreators:v95Major(payout.processed),
+    failedPayoutAmountPaise:payout.failed,
+    failedPayoutAmount:v95Major(payout.failed),
+    reversedPayoutAmountPaise:payout.reversed,
+    reversedPayoutAmount:v95Major(payout.reversed),
+    processedPayoutCount:payout.processedCount,
+    failedPayoutCount:payout.failedCount,
+    reversedPayoutCount:payout.reversedCount,
+    payoutRequestCount:payout.requestedCount,
+    payoutSuccessRate:payout.requestedCount?(payout.processedCount/payout.requestedCount)*100:0,
+    netPlatformRevenuePaise:netRevenue,
+    netPlatformRevenue:v95Major(netRevenue),
+    generatedAt:nowIso(),
+    period:window
+  };
+}
+async function v95FinanceReport(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))) throw v94PayoutError('UNAUTHORIZED','Finance administrator access required.',403);
+  const window=v95ReportWindow(b), previous=v95PreviousWindow(window.from,window.to);
+  const filters={creatorId:b?.creatorId?String(b.creatorId):undefined,productId:b?.productId?String(b.productId):undefined};
+  const data=await v95LoadFinancialData(token,window,filters.creatorId,filters.productId);
+  const prevData=await v95LoadFinancialData(token,previous,filters.creatorId,filters.productId);
+  const summary=v95MetricSummary(window,data), previousSummary=v95MetricSummary(previous,prevData);
+  const groupBy=['month','week','day'].includes(String(b?.groupBy))?String(b.groupBy):'day';
+  const revenue=v95Series(data.paidOrders,'paidAt',r=>{const n=Number(r.fields?.total||0);return Number.isSafeInteger(n)?n*100:0;},window.from,window.to,groupBy);
+  const commission=v95Series(data.allocations,'createdAt',r=>v95Paise(r.fields?.platformCommissionAmountSubunits??(Number(r.fields?.platformCommissionAmount||0)*100))??0,window.from,window.to,groupBy);
+  const creatorNet=v95Series(data.allocations,'createdAt',r=>v95Paise(r.fields?.creatorNetAmountSubunits??(Number(r.fields?.creatorNetAmount||0)*100))??0,window.from,window.to,groupBy);
+  const payouts=v95Series(data.payouts,'processedAt',r=>v95Status(r.fields?.status)==='processed'?(v95Paise(r.fields?.amountPaise)??0):0,window.from,window.to,groupBy);
+  const refunds=v95Series(data.refunds,'createdAt',r=>v95Paise(r.fields?.amountSubunits??(Number(r.fields?.amount||0)*100))??0,window.from,window.to,groupBy);
+  return {summary,previousSummary,comparison:{
+    grossSales:v95PercentChange(summary.grossSalesPaise,previousSummary.grossSalesPaise),
+    platformCommission:v95PercentChange(summary.platformCommissionPaise,previousSummary.platformCommissionPaise),
+    creatorNet:v95PercentChange(summary.creatorNetPaise,previousSummary.creatorNetPaise),
+    refunds:v95PercentChange(summary.refundedAmountPaise,previousSummary.refundedAmountPaise),
+    payouts:v95PercentChange(summary.paidOutToCreatorsPaise,previousSummary.paidOutToCreatorsPaise)
+  },series:{revenue,commission,creatorNet,payouts,refunds},meta:{from:window.from,to:window.to,previousFrom:previous.from,previousTo:previous.to,timezone:window.timezone,currency:window.currency,source:'canonical V90/V91 + V93/V94',fresh:true}};
+}
+async function v95ListFinanceDimension(token:string,uid:string,b:any,email?:string,emailVerified?:boolean,dimension:'creator'|'product'|'order'|'payout'|'refund'){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))) throw v94PayoutError('UNAUTHORIZED','Finance administrator access required.',403);
+  const window=v95ReportWindow(b);
+  if(dimension==='order'){
+    const rows=await fsRunQueryAdvanced(token,'commerceOrders',[{field:{fieldPath:'status'},op:'EQUAL',value:{stringValue:'paid'}}], 'paidAt','DESCENDING',500);
+    return {rows:rows.filter(r=>v95InRange(r.fields?.paidAt||r.fields?.createdAt,window.from,window.to)).slice(0,100).map(r=>({id:String(r.name).split('/').pop(),...r.fields})),generatedAt:nowIso(),period:window};
+  }
+  if(dimension==='payout'){
+    const rows=await fsRunQueryAdvanced(token,'creatorPayouts',[], 'createdAt','DESCENDING',500);
+    return {rows:rows.filter(r=>v95InRange(r.fields?.createdAt,window.from,window.to)).slice(0,100).map(r=>({id:String(r.name).split('/').pop(),...r.fields})),generatedAt:nowIso(),period:window};
+  }
+  if(dimension==='refund'){
+    const rows=await fsRunQueryAdvanced(token,'commerceRefunds',[], 'createdAt','DESCENDING',500);
+    return {rows:rows.filter(r=>v95InRange(r.fields?.createdAt,window.from,window.to)).slice(0,100).map(r=>({id:String(r.name).split('/').pop(),...r.fields})),generatedAt:nowIso(),period:window};
+  }
+  const alloc=await fsRunQueryAdvanced(token,'commerceFinancialAllocations',[], 'createdAt','DESCENDING',500);
+  const refunds=await fsRunQueryAdvanced(token,'commerceRefunds',[], 'createdAt','DESCENDING',500);
+  const payout=await fsRunQueryAdvanced(token,'creatorPayouts',[], 'createdAt','DESCENDING',500);
+  const allocByOrder=new Map<string,any>(); for(const r of alloc){const oid=String(r.fields?.orderId||''); if(oid) allocByOrder.set(oid,r.fields);}
+  const map=new Map<string,any>();
+  for(const row of alloc.filter(r=>v95InRange(r.fields?.createdAt,window.from,window.to))){
+    const f=row.fields||{};
+    const key=dimension==='creator'?String(f.creatorId||''):String(f.productId||'');
+    if(!key) continue;
+    if(!map.has(key)) map.set(key,{id:key,orders:0,grossSalesPaise:0,platformCommissionPaise:0,creatorNetPaise:0,refundsPaise:0,paidOutPaise:0});
+    const x=map.get(key); x.orders+=1; x.grossSalesPaise+=v95Paise(f.grossAmountSubunits??(Number(f.grossAmount||0)*100))??0; x.platformCommissionPaise+=v95Paise(f.platformCommissionAmountSubunits??(Number(f.platformCommissionAmount||0)*100))??0; x.creatorNetPaise+=v95Paise(f.creatorNetAmountSubunits??(Number(f.creatorNetAmount||0)*100))??0;
+  }
+  for(const row of refunds.filter(r=>v95InRange(r.fields?.createdAt,window.from,window.to))){
+    const f=row.fields||{}; const a=allocByOrder.get(String(f.orderId||'')); const key=dimension==='creator'?String(a?.creatorId||f.creatorId||''):String(a?.productId||f.productId||''); if(key&&map.has(key)) map.get(key).refundsPaise+=v95Paise(f.amountSubunits??(Number(f.amount||0)*100))??0;
+  }
+  if(dimension==='creator'){
+    for(const row of payout.filter(r=>v95InRange(r.fields?.processedAt||r.fields?.createdAt,window.from,window.to))){
+      const f=row.fields||{}; const key=String(f.creatorId||''); if(key&&map.has(key)&&v95Status(f.status)==='processed') map.get(key).paidOutPaise+=v95Paise(f.amountPaise)??0;
+    }
+  }
+  const rows=[...map.values()].map(x=>({...x,grossSales:x.grossSalesPaise/100,platformCommission:x.platformCommissionPaise/100,creatorNet:x.creatorNetPaise/100,refunds:x.refundsPaise/100,paidOut:x.paidOutPaise/100,refundRate:x.grossSalesPaise?(x.refundsPaise/x.grossSalesPaise)*100:0})).sort((a,b)=>b.grossSalesPaise-a.grossSalesPaise).slice(0,100);
+  return {rows,generatedAt:nowIso(),period:window};
+}
+function v95CsvEscape(v:any){const s=String(v??'');return `"${s.replace(/"/g,'""')}"`;}
+async function v95Export(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))) throw v94PayoutError('UNAUTHORIZED','Finance administrator access required.',403);
+  const dimension=['orders','creators','products','payouts','refunds','summary'].includes(String(b?.type))?String(b.type):'summary';
+  const window=v95ReportWindow(b);
+  let headers:string[]=[]; let rows:any[][]=[];
+  if(dimension==='summary'){
+    const report=await v95FinanceReport(token,uid,b,email,emailVerified);
+    headers=['metric','value','currency']; const s=report.summary;
+    rows=[['grossSales',s.grossSales,'INR'],['paidOrders',s.paidOrders,'count'],['platformCommission',s.platformCommission,'INR'],['creatorNet',s.creatorNet,'INR'],['refunds',s.refundedAmount,'INR'],['pendingCreatorLiability',s.pendingCreatorLiability,'INR'],['availableCreatorLiability',s.availableCreatorLiability,'INR'],['reservedCreatorLiability',s.reservedCreatorLiability,'INR'],['paidOutToCreators',s.paidOutToCreators,'INR'],['netPlatformRevenue',s.netPlatformRevenue,'INR']];
+  } else if(dimension==='orders'||dimension==='payouts'||dimension==='refunds'){
+    const out=await v95ListFinanceDimension(token,uid,b,email,emailVerified,dimension==='orders'?'order':dimension==='payouts'?'payout':'refund');
+    const rs=out.rows;
+    if(dimension==='orders'){headers=['orderId','creatorId','total','currency','status','paidAt']; rows=rs.map((x:any)=>[x.id,x.creatorId,x.total,x.currency,x.status,x.paidAt]);}
+    else if(dimension==='payouts'){headers=['payoutId','creatorId','amountPaise','currency','status','requestedAt','processedAt','razorpayTransferId','reconciliationStatus']; rows=rs.map((x:any)=>[x.payoutId||x.id,x.creatorId,x.amountPaise,x.currency,x.status,x.requestedAt,x.processedAt,x.razorpayTransferId,x.reconciliationStatus]);}
+    else {headers=['refundId','orderId','creatorId','amount','currency','status','createdAt']; rows=rs.map((x:any)=>[x.refundId||x.id,x.orderId,x.creatorId,x.amount,x.currency,x.status,x.createdAt]);}
+  } else {
+    const out=await v95ListFinanceDimension(token,uid,b,email,emailVerified,dimension==='creators'?'creator':'product');
+    headers=dimension==='creators'?['creatorId','orders','grossSales','platformCommission','creatorNet','refunds','refundRate','paidOut']:['productId','orders','grossSales','platformCommission','creatorNet','refunds','refundRate'];
+    rows=out.rows.map((x:any)=>headers.map(h=>x[h]));
+  }
+  const csv=[headers.map(v95CsvEscape).join(','),...rows.map(r=>r.map(v95CsvEscape).join(','))].join('\n');
+  return {filename:`offscrpt-finance-${dimension}-${window.from.slice(0,10)}-${window.to.slice(0,10)}.csv`,csv,generatedAt:nowIso(),period:window,schemaVersion:'95.0'};
+}
+async function v95FinanceHealth(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))) throw v94PayoutError('UNAUTHORIZED','Finance administrator access required.',403);
+  const window=v95ReportWindow(b);
+  const [alloc,payout,refund,ledger]=await Promise.all([
+    fsRunQueryAdvanced(token,'commerceFinancialAllocations',[], 'createdAt','DESCENDING',500),
+    fsRunQueryAdvanced(token,'creatorPayouts',[], 'createdAt','DESCENDING',500),
+    fsRunQueryAdvanced(token,'commerceRefunds',[], 'createdAt','DESCENDING',500),
+    fsRunQueryAdvanced(token,'commerceVendorLedger',[], 'effectiveAt','DESCENDING',500)
+  ]);
+  const issues:any[]=[];
+  const seenTransfers=new Set<string>();
+  for(const r of payout){
+    const f=r.fields||{};
+    if(v95Status(f.status)==='processed'&&!f.razorpayTransferId) issues.push({severity:'CRITICAL',type:'processed_payout_without_transfer',id:f.payoutId||r.name});
+    if(f.razorpayTransferId){
+      if(seenTransfers.has(String(f.razorpayTransferId))) issues.push({severity:'CRITICAL',type:'duplicate_transfer_id',id:f.razorpayTransferId});
+      seenTransfers.add(String(f.razorpayTransferId));
+    }
+  }
+  const allocById=new Map<string,any>(); for(const r of alloc) {const f=r.fields||{}; if(f.allocationId) allocById.set(String(f.allocationId),f);}
+  for(const r of ledger){const f=r.fields||{}; if(['sale_credit','sale'].includes(v95Status(f.entryType))&&!f.financialAllocationId) issues.push({severity:'WARNING',type:'ledger_credit_without_allocation',id:r.name});}
+  for(const r of refund){const f=r.fields||{}; if(v95Status(f.status)==='processed'&&f.amountSubunits&&Number(f.amountSubunits)<0) issues.push({severity:'CRITICAL',type:'negative_refund',id:r.name});}
+  return {status:issues.some(x=>x.severity==='CRITICAL')?'critical':issues.length?'warning':'healthy',healthy:issues.filter(x=>x.severity==='INFO').length,warnings:issues.filter(x=>x.severity==='WARNING').length,critical:issues.filter(x=>x.severity==='CRITICAL').length,issues:issues.slice(0,100),period:window,generatedAt:nowIso(),recordsScanned:{allocations:alloc.length,payouts:payout.length,refunds:refund.length,ledger:ledger.length}};
+}
+async function fsCommitWithPrecondition(token:string,writes:any[],preconditions:Record<string,string>){
+  const normalized=normalizeCommitWrites(writes).map((write:any)=>{
+    if(write?.update?.name){
+      const prefix=`projects/${projectId()}/databases/(default)/documents/`;
+      const short=String(write.update.name).startsWith(prefix)?String(write.update.name).slice(prefix.length):String(write.update.name);
+      const updateTime=preconditions[short];
+      return updateTime ? {...write,currentDocument:{updateTime}} : write;
+    }
+    return write;
+  });
+  const r=await fetch(`${firestoreBase()}:commit`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({writes:normalized})});
+  if(!r.ok){const text=await r.text(); const e:any=new Error(`Firestore conditional commit failed: ${r.status} ${text.slice(0,500)}`); e.statusCode=(r.status===409||r.status===400)?409:r.status; throw e;}
+  return r.json();
+}
+
+function v94SafeInt(value:any){
+  const n=Number(value); return Number.isSafeInteger(n)?n:null;
+}
+function v94BalanceId(creatorId:string,currency='INR'){return stableId('bal',`${creatorId}:${currency.toUpperCase()}`);}
+function v94LedgerId(kind:string,sourceId:string){return stableId('vledger',`${kind}:${sourceId}`);}
+function v94PayoutError(code:string,message:string,statusCode=400){const e:any=new Error(message);e.code=code;e.statusCode=statusCode;return e;}
+const V94_DEFAULT_HOLD_DAYS=7;
+const V94_DEFAULT_MINIMUM_PAYOUT_PAISE=10000;
+const V94_DEFAULT_MANUAL_REVIEW=true;
+
+function v94ParseAmountToPaise(raw:any){
+  const text=String(raw??'').trim().replace(/[,₹\\s]/g,'');
+  if(!/^\\d+(?:\\.\\d{1,2})?$/.test(text)) throw v94PayoutError('INVALID_AMOUNT','Enter a valid INR payout amount.');
+  const [whole,fraction='']=text.split('.');
+  const paise=Number(whole)*100+Number((fraction+'00').slice(0,2));
+  if(!Number.isSafeInteger(paise)||paise<=0) throw v94PayoutError('INVALID_AMOUNT','Payout amount must be greater than zero.');
+  return paise;
+}
+
+async function getPayoutSettings(token:string){
+  const global=await fsGet(token,'siteConfig/global');
+  const settings=(global?.fields?.commercePayouts&&typeof global.fields.commercePayouts==='object')?global.fields.commercePayouts:{};
+  const min=v94SafeInt(settings.minimumPayoutAmountPaise);
+  const max=v94SafeInt(settings.maximumPayoutAmountPaise);
+  const holdRaw=Number(settings.payoutHoldDays);
+  const holdDays=Number.isSafeInteger(holdRaw)&&holdRaw>=0&&holdRaw<=365?holdRaw:V94_DEFAULT_HOLD_DAYS;
+  return {
+    enabled:settings.enabled!==false,
+    minimumPayoutAmountPaise:min!==null&&min>=100?min:V94_DEFAULT_MINIMUM_PAYOUT_PAISE,
+    maximumPayoutAmountPaise:max!==null&&max>=100?max:null,
+    dailyPayoutLimitPaise:v94SafeInt(settings.dailyPayoutLimitPaise),
+    monthlyPayoutLimitPaise:v94SafeInt(settings.monthlyPayoutLimitPaise),
+    holdDays,
+    manualApprovalRequired:settings.manualApprovalRequired===undefined?V94_DEFAULT_MANUAL_REVIEW:Boolean(settings.manualApprovalRequired),
+    version:Number(settings.version||1)
+  };
+}
+
+async function v94EnsureBalanceSnapshot(token:string,creatorId:string,currency='INR'){
+  const id=v94BalanceId(creatorId,currency); const path=`creatorCommerceBalances/${id}`; const existing=await fsGet(token,path);
+  if(existing)return {id,doc:existing};
+  const stamp=nowIso();
+  const initial={creatorId,currency:currency.toUpperCase(),pendingAmountPaise:0,availableAmountPaise:0,reservedAmountPaise:0,paidAmountPaise:0,negativeAmountPaise:0,totalEarnedAmountPaise:0,totalRefundedAmountPaise:0,totalWithdrawnAmountPaise:0,balanceVersion:1,lastLedgerEntryId:null,createdAt:stamp,updatedAt:stamp};
+  try{await fsCommit(token,[{create:{name:`${firestoreBase()}/${path}`,fields:fields(initial)}}]);}
+  catch{const again=await fsGet(token,path);if(again)return {id,doc:again};throw new Error('Unable to initialize creator balance.');}
+  return {id,doc:{name:`${firestoreBase()}/${path}`,fields:initial,updateTime:undefined}};
+}
+
+async function v94LoadLedger(token:string,creatorId:string){
+  return fsRunQueryAdvanced(token,'commerceVendorLedger',[fsFilter('creatorId','EQUAL',{stringValue:creatorId})],{orderBy:[{fieldPath:'effectiveAt',direction:'ASCENDING'}],limit:1000});
+}
+
+function v94RecomputeBalance(rows:any[],nowMs=Date.now()){
+  let pending=0, rawAvailable=0, reserved=0, paid=0, totalEarned=0, totalRefunded=0, totalWithdrawn=0;
+  const ordered=rows.slice().sort((a,b)=>String(a.fields?.effectiveAt||a.fields?.createdAt||'').localeCompare(String(b.fields?.effectiveAt||b.fields?.createdAt||''))||String(a.name).localeCompare(String(b.name)));
+  const saleEntries=new Map<string,{pending:number;available:number}>();
+  for(const row of ordered){
+    const f=row.fields||{}; const amount=v94SafeInt(f.amountPaise); const type=String(f.entryType||''); const status=String(f.status||'posted');
+    if(status==='void'||amount===null||amount<0) continue;
+    if(type==='sale_credit'){
+      totalEarned+=amount;
+      const at=Date.parse(String(f.availableAt||''));
+      const keys=[String(f.financialAllocationId||f.sourceId||''),String(f.ledgerEntryId||''),String(row.name||'').split('/').pop()||''].filter(Boolean); const state={pending:0,available:amount};
+      if(Number.isFinite(at)&&at>nowMs){pending+=amount;state.pending=amount;state.available=0;} else {rawAvailable+=amount;}
+      for(const key of keys) saleEntries.set(key,state);
+    } else if(type==='refund_debit'||type==='commission_reversal'){
+      totalRefunded+=amount;
+      const source=String(f.reversesLedgerEntryId||f.financialAllocationId||'');
+      const sale=saleEntries.get(source);
+      if(sale&&sale.pending>0){
+        const use=Math.min(amount,sale.pending); sale.pending-=use; pending=Math.max(0,pending-use); const remainder=amount-use; if(remainder>0) rawAvailable-=remainder;
+      } else rawAvailable-=amount;
+    } else if(type==='payout_reservation'){
+      reserved+=amount; rawAvailable-=amount;
+    } else if(type==='payout_release'){
+      reserved-=amount; rawAvailable+=amount;
+    } else if(type==='payout_debit'){
+      reserved-=amount; paid+=amount; totalWithdrawn+=amount;
+    } else if(type==='payout_reversal'){
+      const reversed=Math.min(amount,paid); paid-=reversed; totalWithdrawn=Math.max(0,totalWithdrawn-reversed); rawAvailable+=amount;
+    } else if(type==='manual_adjustment'||type==='correction'){
+      if(String(f.entryDirection||'credit')==='debit') rawAvailable-=amount; else rawAvailable+=amount;
+    }
+  }
+  const negative=Math.max(0,-rawAvailable); const available=Math.max(0,rawAvailable);
+  return {pendingAmountPaise:Math.max(0,pending),availableAmountPaise:available,reservedAmountPaise:Math.max(0,reserved),paidAmountPaise:Math.max(0,paid),negativeAmountPaise:negative,totalEarnedAmountPaise:Math.max(0,totalEarned),totalRefundedAmountPaise:Math.max(0,totalRefunded),totalWithdrawnAmountPaise:Math.max(0,totalWithdrawn)};
+}
+
+async function v94RefreshBalanceSnapshot(token:string,creatorId:string,currency='INR'){
+  const snap=await v94EnsureBalanceSnapshot(token,creatorId,currency); const rows=await v94LoadLedger(token,creatorId); const computed=v94RecomputeBalance(rows); const version=(v94SafeInt(snap.doc.fields.balanceVersion)||0)+1; const path=`creatorCommerceBalances/${snap.id}`;
+  if(snap.doc.updateTime){
+    await fsCommitWithPrecondition(token,[{update:{name:`${firestoreBase()}/${path}`,fields:fields({...computed,balanceVersion:version,lastLedgerEntryId:rows[rows.length-1]?.name?String(rows[rows.length-1].name).split('/').pop():snap.doc.fields.lastLedgerEntryId,updatedAt:nowIso()})}}],{[path]:snap.doc.updateTime}).catch(()=>{});
+  } else {
+    await fsPatch(token,path,{...computed,balanceVersion:version,updatedAt:nowIso()}).catch(()=>{});
+  }
+  return {id:snap.id,computed};
+}
+
+async function v94AppendLedgerEntry(token:string,entry:any){
+  const creatorId=String(entry.creatorId||''); if(!creatorId) throw new Error('Ledger creator is required.');
+  const id=String(entry.ledgerEntryId||''); if(!id) throw new Error('Ledger entry ID is required.');
+  const existing=await fsGet(token,`commerceVendorLedger/${id}`); if(existing) return {id,...existing.fields,existing:true};
+  const snap=await v94EnsureBalanceSnapshot(token,creatorId,'INR'); const balancePath=`creatorCommerceBalances/${snap.id}`; const stamp=nowIso();
+  const doc={...entry,ledgerEntryId:id,currency:'INR',status:entry.status||'posted',createdAt:entry.createdAt||stamp,effectiveAt:entry.effectiveAt||stamp,updatedAt:stamp};
+  const nextVersion=(v94SafeInt(snap.doc.fields.balanceVersion)||0)+1;
+  try{
+    await fsCommitWithPrecondition(token,[
+      {create:{name:`${firestoreBase()}/commerceVendorLedger/${id}`,fields:fields(doc)}},
+      {update:{name:`${firestoreBase()}/${balancePath}`,fields:fields({balanceVersion:nextVersion,lastLedgerEntryId:id,updatedAt:stamp})}}
+    ],snap.doc.updateTime?{[balancePath]:snap.doc.updateTime}:{});
+  }catch(error:any){
+    const raced=await fsGet(token,`commerceVendorLedger/${id}`); if(raced)return {id,...raced.fields,existing:true};
+    if(Number(error?.statusCode)===409){ await new Promise(r=>setTimeout(r,25)); return v94AppendLedgerEntry(token,entry); }
+    throw error;
+  }
+  return {id,...doc};
+}
+
+async function v94MaterializeSaleCredit(token:string,allocation:any){
+  if(String(allocation?.financialStatus||'')!=='calculated') return null;
+  const creatorId=String(allocation?.creatorId||''); const amountPaise=v94SafeInt(allocation?.creatorNetAmountSubunits); if(!creatorId||amountPaise===null||amountPaise<0) return null;
+  const id=v94LedgerId('sale',String(allocation.allocationId||allocation.orderId||'')); const existing=await fsGet(token,`commerceVendorLedger/${id}`); if(existing)return {id,...existing.fields};
+  const settings=await getPayoutSettings(token); const effectiveAt=String(allocation.paidAt||allocation.createdAt||nowIso()); const effectiveMs=Date.parse(effectiveAt); const availableAt=new Date((Number.isFinite(effectiveMs)?effectiveMs:Date.now())+settings.holdDays*86400000).toISOString();
+  const doc={ledgerEntryId:id,creatorId,sellerId:String(allocation.sellerId||''),orderId:String(allocation.orderId||''),paymentId:String(allocation.paymentId||''),financialAllocationId:String(allocation.allocationId||''),payoutId:null,refundId:null,entryType:'sale_credit',entryDirection:'credit',amountPaise,originalAmountPaise:amountPaise,grossAmountPaise:v94SafeInt(allocation.grossAmountSubunits)||0,currency:'INR',balanceBucket:Date.parse(availableAt)<=Date.now()?'available':'pending',availableAt,status:'posted',source:'v93_financial_allocation',sourceId:String(allocation.allocationId||''),idempotencyKey:`sale_credit:${allocation.allocationId}`,effectiveAt,createdAt:nowIso(),updatedAt:nowIso()};
+  return v94AppendLedgerEntry(token,doc);
+}
+
+async function v94CreateRefundLedgerEntry(token:any,allocation:any,refundId:string,creatorReversalPaise:number){
+  if(creatorReversalPaise<=0) return null;
+  const id=v94LedgerId('refund',refundId); const existing=await fsGet(token,`commerceVendorLedger/${id}`); if(existing)return {id,...existing.fields};
+  return v94AppendLedgerEntry(token,{ledgerEntryId:id,creatorId:String(allocation.creatorId||''),sellerId:String(allocation.sellerId||''),orderId:String(allocation.orderId||''),paymentId:String(allocation.paymentId||''),financialAllocationId:String(allocation.allocationId||''),payoutId:null,refundId,entryType:'refund_debit',entryDirection:'debit',amountPaise:creatorReversalPaise,originalAmountPaise:creatorReversalPaise,currency:'INR',balanceBucket:'available',status:'posted',source:'v93_refund_reversal',sourceId:refundId,reversesLedgerEntryId:v94LedgerId('sale',String(allocation.allocationId||allocation.orderId||'')),idempotencyKey:`refund_debit:${refundId}`,effectiveAt:nowIso(),createdAt:nowIso(),updatedAt:nowIso()});
+}
+
+async function v94GetBalance(token:string,uid:string){
+  const seller=await getSellerProfile(token,uid); const settings=await getPayoutSettings(token); const refreshed=await v94RefreshBalanceSnapshot(token,uid,'INR'); const c=refreshed.computed;
+  const sellerActive=seller?.fields?.sellerEnabled===true && String(seller?.fields?.onboardingStatus||'')==='active'; const routeAccount=String(seller?.fields?.razorpayAccountId||''); const routeStatus=String(seller?.fields?.razorpayAccountStatus||seller?.fields?.health||'not_started');
+  let blockedReason=''; if(!settings.enabled)blockedReason='PAYOUTS_DISABLED'; else if(!sellerActive)blockedReason='SELLER_NOT_ACTIVE'; else if(!routeAccount)blockedReason='ACCOUNT_NOT_READY'; else if(routeStatus==='suspended')blockedReason='ACCOUNT_SUSPENDED'; else if(c.negativeAmountPaise>0)blockedReason='NEGATIVE_BALANCE';
+  const payoutEnabled=settings.enabled&&sellerActive&&!!routeAccount&&routeStatus!=='suspended'&&c.negativeAmountPaise===0;
+  return {creatorId:uid,currency:'INR',pendingBalancePaise:c.pendingAmountPaise,availableBalancePaise:c.availableAmountPaise,reservedBalancePaise:c.reservedAmountPaise,paidOutBalancePaise:c.paidAmountPaise,totalEarnedPaise:c.totalEarnedAmountPaise,totalRefundedPaise:c.totalRefundedAmountPaise,totalWithdrawnPaise:c.totalWithdrawnAmountPaise,negativeBalancePaise:c.negativeAmountPaise,withdrawablePaise:payoutEnabled?c.availableAmountPaise:0,minimumPayoutPaise:settings.minimumPayoutAmountPaise,payoutEnabled,payoutBlockedReason:blockedReason,sellerStatus:String(seller?.fields?.onboardingStatus||'not_started'),routeAccountStatus:routeStatus,settings};
+}
+
+function v94PublicPayout(row:any){
+  const f=row?.fields||row||{}; return {id:String(row?.id||row?.name||f.payoutId||''),...f};
+}
+
+async function v94CreatePayout(token:string,uid:string,b:any){
+  const settings=await getPayoutSettings(token); if(!settings.enabled)throw v94PayoutError('PAYOUTS_DISABLED','Payouts are currently disabled.');
+  const amountPaise=v94ParseAmountToPaise(b.amount); if(settings.maximumPayoutAmountPaise!==null&&amountPaise>settings.maximumPayoutAmountPaise)throw v94PayoutError('ABOVE_MAXIMUM','Requested payout exceeds the configured maximum.');
+  const idempotencyKey=String(b.idempotencyKey||'').trim(); if(idempotencyKey.length<8||idempotencyKey.length>200)throw v94PayoutError('DUPLICATE_REQUEST','A valid idempotency key is required.');
+  const idemId=stableId('payout_idem',`${uid}:${idempotencyKey}`); const idemPath=`commerceIdempotency/${idemId}`; const existingIdem=await fsGet(token,idemPath); if(existingIdem?.fields?.payoutId){const p=await fsGet(token,`creatorPayouts/${existingIdem.fields.payoutId}`);if(p)return {payout:v94PublicPayout({id:existingIdem.fields.payoutId,...p.fields}),balance:await v94GetBalance(token,uid),reused:true};}
+  const balance=await v94GetBalance(token,uid); if(!balance.payoutEnabled)throw v94PayoutError(balance.payoutBlockedReason||'PAYOUT_NOT_AVAILABLE','Payouts are not currently available for this seller.');
+  if(amountPaise<balance.minimumPayoutPaise)throw v94PayoutError('BELOW_MINIMUM',`Minimum payout is ${majorFromSubunits(balance.minimumPayoutPaise)} INR.`);
+  if(amountPaise>balance.withdrawablePaise)throw v94PayoutError('INSUFFICIENT_BALANCE','Requested payout exceeds your withdrawable balance.');
+  const seller=await getSellerProfile(token,uid); const sellerId=String(seller?.fields?.sellerId||sellerIdFor(uid)); const accountId=String(seller?.fields?.razorpayAccountId||''); if(!accountId)throw v94PayoutError('ACCOUNT_NOT_READY','Connect your Razorpay seller account before requesting a payout.');
+  const payoutId=crypto.randomUUID(); const stamp=nowIso(); const status=settings.manualApprovalRequired?'pending_review':'requested';
+  const payout={payoutId,creatorId:uid,sellerId,amountPaise,currency:'INR',status,requestedAt:stamp,approvedAt:null,submittedAt:null,processedAt:null,failedAt:null,reversedAt:null,razorpayAccountId:accountId,razorpayTransferId:null,ledgerReservationId:null,ledgerDebitId:null,idempotencyKey,reconciliationStatus:'not_required',providerTransferStatus:null,providerSettlementStatus:null,failureCode:null,failureMessage:null,createdAt:stamp,updatedAt:stamp,financialSource:'v94_creator_balance'};
+  try{await fsCommit(token,[
+    {create:{name:`${firestoreBase()}/creatorPayouts/${payoutId}`,fields:fields(payout)}},
+    {create:{name:`${firestoreBase()}/${idemPath}`,fields:fields({userId:uid,payoutId,createdAt:stamp,operation:'createPayout'})}},
+    {create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`payout_requested:${payoutId}`)}`,fields:fields({actorId:uid,actorType:'creator',targetType:'payout',targetId:payoutId,event:'payout_requested',timestamp:stamp,metadata:{amountPaise,currency:'INR'}})}}
+  ]);}catch(error:any){const raced=await fsGet(token,idemPath);if(raced?.fields?.payoutId){const p=await fsGet(token,`creatorPayouts/${raced.fields.payoutId}`);if(p)return {payout:v94PublicPayout({id:raced.fields.payoutId,...p.fields}),balance:await v94GetBalance(token,uid),reused:true};}throw error;}
+  if(!settings.manualApprovalRequired){
+    await v94ApproveAndSubmitPayout(token,payoutId,uid,false);
+    const done=await fsGet(token,`creatorPayouts/${payoutId}`); return {payout:v94PublicPayout({id:payoutId,...(done?.fields||payout)}),balance:await v94GetBalance(token,uid)};
+  }
+  return {payout:v94PublicPayout({id:payoutId,...payout}),balance};
+}
+
+async function v94ReservePayout(token:string,payout:any,actorId:string){
+  const payoutId=String(payout.payoutId||''); const creatorId=String(payout.creatorId||''); const amountPaise=v94SafeInt(payout.amountPaise); if(!payoutId||!creatorId||amountPaise===null||amountPaise<100)throw v94PayoutError('INVALID_STATE','Invalid payout record.');
+  const balance=await v94GetBalance(token,creatorId); if(!balance.payoutEnabled)throw v94PayoutError(balance.payoutBlockedReason||'PAYOUT_NOT_AVAILABLE','Payout is no longer eligible.');
+  if(amountPaise>balance.withdrawablePaise)throw v94PayoutError('INSUFFICIENT_BALANCE','Payout exceeds current withdrawable balance.');
+  const seller=await getSellerProfile(token,creatorId); const accountId=String(seller?.fields?.razorpayAccountId||''); if(accountId!==String(payout.razorpayAccountId||''))throw v94PayoutError('RECONCILIATION_REQUIRED','Seller payout account mapping changed. Reconciliation is required.');
+  const snap=await v94EnsureBalanceSnapshot(token,creatorId,'INR'); const reservationId=v94LedgerId('reserve',payoutId); const now=nowIso(); const balancePath=`creatorCommerceBalances/${snap.id}`; const version=(v94SafeInt(snap.doc.fields.balanceVersion)||0)+1;
+  const reservation={ledgerEntryId:reservationId,creatorId,sellerId:String(payout.sellerId||''),orderId:null,paymentId:null,financialAllocationId:null,payoutId,refundId:null,entryType:'payout_reservation',entryDirection:'debit',amountPaise,currency:'INR',balanceBucket:'available',status:'posted',source:'v94_payout',sourceId:payoutId,idempotencyKey:`payout_reservation:${payoutId}`,effectiveAt:now,createdAt:now,updatedAt:now};
+  try{
+    await fsCommitWithPrecondition(token,[
+      {create:{name:`${firestoreBase()}/commerceVendorLedger/${reservationId}`,fields:fields(reservation)}},
+      {update:{name:`${firestoreBase()}/creatorPayouts/${payoutId}`,fields:fields({status:'reserved',approvedAt:payout.approvedAt||now,ledgerReservationId:reservationId,updatedAt:now,approvedBy:actorId})}},
+      {update:{name:`${firestoreBase()}/${balancePath}`,fields:fields({balanceVersion:version,lastLedgerEntryId:reservationId,updatedAt:now})}},
+      {create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`payout_reserved:${payoutId}`)}`,fields:fields({actorId,actorType:actorId===creatorId?'creator':'admin',targetType:'payout',targetId:payoutId,event:'payout_reserved',timestamp:now,metadata:{amountPaise}})}}
+    ],snap.doc.updateTime?{[balancePath]:snap.doc.updateTime}:{});
+  }catch(error:any){const existing=await fsGet(token,`commerceVendorLedger/${reservationId}`);if(existing){return {reservationId};}if(Number(error?.statusCode)===409)throw v94PayoutError('PAYOUT_CONFLICT','Payout balance changed while approving. Refresh and retry.',409);throw error;}
+  return {reservationId};
+}
+
+async function v94ReleasePayoutReservation(token:string,payout:any,reasonCode:string,reason:string,actorId='system'){
+  const payoutId=String(payout.payoutId||''); const creatorId=String(payout.creatorId||''); const amountPaise=v94SafeInt(payout.amountPaise); if(!payoutId||!creatorId||amountPaise===null)return;
+  const id=v94LedgerId('release',payoutId); const existing=await fsGet(token,`commerceVendorLedger/${id}`); if(existing)return;
+  await v94AppendLedgerEntry(token,{ledgerEntryId:id,creatorId,sellerId:String(payout.sellerId||''),orderId:null,paymentId:null,financialAllocationId:null,payoutId,refundId:null,entryType:'payout_release',entryDirection:'credit',amountPaise,currency:'INR',balanceBucket:'available',status:'posted',source:'v94_payout',sourceId:payoutId,idempotencyKey:`payout_release:${payoutId}`,reasonCode,reason,effectiveAt:nowIso(),createdAt:nowIso(),updatedAt:nowIso()});
+  await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'failed',failedAt:nowIso(),failureCode:reasonCode,failureMessage:reason,updatedAt:nowIso(),reconciliationStatus:'not_required'});
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`payout_failed:${payoutId}:${id}`)}`,fields:fields({actorId,actorType:actorId==='system'?'system':'admin',targetType:'payout',targetId:payoutId,event:'payout_failed',timestamp:nowIso(),metadata:{reasonCode,reason}})}}]).catch(()=>{});
+}
+
+async function v94FinalizeProcessedPayout(token:string,payout:any,providerTransfer:any,eventId:string){
+  const payoutId=String(payout.payoutId||''); const creatorId=String(payout.creatorId||''); const amountPaise=v94SafeInt(payout.amountPaise); if(!payoutId||!creatorId||amountPaise===null)throw v94PayoutError('INVALID_STATE','Invalid payout state.');
+  if(!['reserved','processing','processed'].includes(String(payout.status||''))) throw v94PayoutError('INVALID_STATE','Payout is not in a transferable state.');
+  const providerAmount=v94SafeInt(providerTransfer?.amount); if(providerAmount!==null&&providerAmount!==amountPaise)throw v94PayoutError('RECONCILIATION_REQUIRED','Provider transfer amount does not match the payout amount.');
+  const storedAccount=String(payout.razorpayAccountId||''); const recipient=String(providerTransfer?.recipient||''); if(recipient&&recipient!==storedAccount)throw v94PayoutError('RECONCILIATION_REQUIRED','Provider transfer recipient does not match the seller account.');
+  const debitId=v94LedgerId('debit',payoutId); const existing=await fsGet(token,`commerceVendorLedger/${debitId}`); if(!existing){
+    await v94AppendLedgerEntry(token,{ledgerEntryId:debitId,creatorId,sellerId:String(payout.sellerId||''),orderId:null,paymentId:null,financialAllocationId:null,payoutId,refundId:null,entryType:'payout_debit',entryDirection:'debit',amountPaise,currency:'INR',balanceBucket:'reserved',status:'posted',source:'razorpay_route_transfer',sourceId:String(providerTransfer?.id||payout.razorpayTransferId||payoutId),idempotencyKey:`payout_debit:${payoutId}`,effectiveAt:nowIso(),createdAt:nowIso(),updatedAt:nowIso()});
+  }
+  const now=nowIso(); const status=String(providerTransfer?.transfer_status||providerTransfer?.status||'processed'); const settlementStatus=providerTransfer?.settlement_status??null;
+  await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'processed',processedAt:payout.processedAt||now,razorpayTransferId:String(providerTransfer?.id||payout.razorpayTransferId||''),providerTransferStatus:status,providerSettlementStatus:settlementStatus,reconciliationStatus:'reconciled',ledgerDebitId:debitId,updatedAt:now});
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`payout_processed:${payoutId}:${eventId}`)}`,fields:fields({actorId:'system',actorType:'system',targetType:'payout',targetId:payoutId,event:'payout_processed',timestamp:now,metadata:{razorpayTransferId:String(providerTransfer?.id||payout.razorpayTransferId||''),providerStatus:status}})}}]).catch(()=>{});
+}
+
+async function v94SubmitReservedPayout(token:string,payoutId:string){
+  let payoutDoc=await fsGet(token,`creatorPayouts/${payoutId}`); if(!payoutDoc)throw v94PayoutError('INVALID_STATE','Payout not found.',404); let payout={payoutId,...payoutDoc.fields};
+  if(!['reserved','processing'].includes(String(payout.status||'')))return payout;
+  const creatorId=String(payout.creatorId||''); const accountId=String(payout.razorpayAccountId||''); if(!creatorId||!accountId)throw v94PayoutError('ACCOUNT_NOT_READY','Payout destination is not configured.');
+  try{
+    const account=await fetchLinkedAccount(accountId); if(String(account?.status||'')==='suspended'){await v94ReleasePayoutReservation(token,payout,'ACCOUNT_SUSPENDED','The Razorpay seller account is suspended.'); return {...payout,status:'failed'};}
+  }catch(error:any){
+    const providerStatus=Number(error?.providerStatus||0); if(providerStatus===401||providerStatus===403||Number(error?.statusCode)===502){await v94ReleasePayoutReservation(token,payout,'ROUTE_UNAVAILABLE','Razorpay Route is not currently available for this account.'); return {...payout,status:'failed'};}
+    await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'reconciliation_required',failureCode:'PROVIDER_TIMEOUT',failureMessage:'Unable to verify the Razorpay seller account before payout submission.',reconciliationStatus:'required',updatedAt:nowIso()}); return {...payout,status:'reconciliation_required'};
+  }
+  const now=nowIso(); await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'processing',submittedAt:payout.submittedAt||now,updatedAt:now});
+  try{
+    const transfer=await createDirectTransfer({accountId,amountPaise:Number(payout.amountPaise),currency:'INR',notes:{offscrpt_payout_id:payoutId.slice(0,32)}});
+    const transferStatus=String(transfer?.transfer_status||transfer?.status||'created'); const transferId=String(transfer?.id||''); if(!transferId)throw new Error('Razorpay did not return a transfer ID.');
+    const latest=await fsGet(token,`creatorPayouts/${payoutId}`); const latestPayout={payoutId,...(latest?.fields||payout)};
+    await fsPatch(token,`creatorPayouts/${payoutId}`,{razorpayTransferId:transferId,providerTransferStatus:transferStatus,providerSettlementStatus:transfer?.settlement_status??null,reconciliationStatus:'pending',updatedAt:nowIso()});
+    if(transferStatus==='processed') await v94FinalizeProcessedPayout(token,latestPayout,{...transfer,id:transferId,recipient:String(transfer?.recipient||accountId)},`response:${transferId}`);
+    return {...latestPayout,razorpayTransferId:transferId,providerTransferStatus:transferStatus,status:transferStatus==='processed'?'processed':'processing'};
+  }catch(error:any){
+    const providerStatus=Number(error?.providerStatus||0); const code=(providerStatus===401||providerStatus===403)?'ROUTE_UNAVAILABLE':Number(error?.statusCode)===503||!providerStatus?'PROVIDER_TIMEOUT':'PROVIDER_REJECTED';
+    if(code==='PROVIDER_TIMEOUT'){
+      await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'reconciliation_required',failureCode:code,failureMessage:'The transfer outcome could not be determined. Reconciliation is required before retrying.',reconciliationStatus:'required',updatedAt:nowIso()});
+      return {...payout,status:'reconciliation_required'};
+    }
+    await v94ReleasePayoutReservation(token,payout,code,code==='ROUTE_UNAVAILABLE'?'Razorpay Route transfer capability is unavailable for this account.':String(error?.message||'Razorpay rejected the transfer.'));
+    return {...payout,status:'failed'};
+  }
+}
+
+async function v94ApproveAndSubmitPayout(token:string,payoutId:string,adminUid:string,isAdmin=true){
+  const payoutDoc=await fsGet(token,`creatorPayouts/${payoutId}`); if(!payoutDoc)throw v94PayoutError('INVALID_STATE','Payout not found.',404); const payout={payoutId,...payoutDoc.fields};
+  const creatorId=String(payout.creatorId||''); if(!creatorId)throw v94PayoutError('INVALID_STATE','Payout creator is missing.');
+  if(!['requested','pending_review'].includes(String(payout.status||''))) { if(['reserved','processing'].includes(String(payout.status||''))) return v94SubmitReservedPayout(token,payoutId); return payout; }
+  await v94ReservePayout(token,payout,adminUid);
+  return v94SubmitReservedPayout(token,payoutId);
+}
+
+async function createPayout(token:string,uid:string,b:any){return v94CreatePayout(token,uid,b);}
+async function getCreatorBalance(token:string,uid:string){return v94GetBalance(token,uid);}
+async function listCreatorPayouts(token:string,uid:string){
+  const rows=await fsRunQueryAdvanced(token,'creatorPayouts',[fsFilter('creatorId','EQUAL',{stringValue:uid})],{orderBy:[{fieldPath:'createdAt',direction:'DESCENDING'}],limit:100});
+  return {payouts:rows.map(v94PublicPayout)};
+}
+async function getPayout(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  const payoutId=String(b.payoutId||''); if(!payoutId)throw new Error('Payout ID is required.'); const row=await fsGet(token,`creatorPayouts/${payoutId}`); if(!row)throw v94PayoutError('NOT_FOUND','Payout not found.',404); const admin=await verifyCommerceAdmin(token,uid,email,emailVerified); if(String(row.fields.creatorId||'')!==uid&&!admin)throw v94PayoutError('UNAUTHORIZED','You are not authorized to view this payout.',403); return {payout:v94PublicPayout({id:payoutId,...row.fields})};
+}
+async function approvePayout(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified)))throw v94PayoutError('UNAUTHORIZED','Admin access required.',403); const payoutId=String(b.payoutId||''); if(!payoutId)throw new Error('Payout ID is required.'); const payout=await v94ApproveAndSubmitPayout(token,payoutId,uid,true); const creatorId=String(payout.creatorId||''); return {payout:v94PublicPayout({id:payoutId,...payout}),balance:creatorId?await v94GetBalance(token,creatorId):undefined};
+}
+async function rejectPayout(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified)))throw v94PayoutError('UNAUTHORIZED','Admin access required.',403); const payoutId=String(b.payoutId||''); const row=await fsGet(token,`creatorPayouts/${payoutId}`); if(!row)throw v94PayoutError('NOT_FOUND','Payout not found.',404); if(!['requested','pending_review'].includes(String(row.fields.status||'')))throw v94PayoutError('INVALID_STATE','Only pending payouts can be rejected.'); const reason=String(b.reason||'Rejected by administrator.').trim().slice(0,300); const stamp=nowIso(); await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'rejected',failureCode:'ADMIN_REJECTED',failureMessage:reason,updatedAt:stamp}); await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`payout_rejected:${payoutId}`)}`,fields:fields({actorId:uid,actorType:'admin',targetType:'payout',targetId:payoutId,event:'payout_rejected',timestamp:stamp,metadata:{reason}})}}]); return {payout:{id:payoutId,...row.fields,status:'rejected',failureCode:'ADMIN_REJECTED',failureMessage:reason,updatedAt:stamp}};
+}
+async function adminListPayouts(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified)))throw v94PayoutError('UNAUTHORIZED','Admin access required.',403); const filters:any=[]; if(String(b.status||''))filters.push(fsFilter('status','EQUAL',{stringValue:String(b.status)})); if(String(b.creatorId||''))filters.push(fsFilter('creatorId','EQUAL',{stringValue:String(b.creatorId)})); const rows=await fsRunQueryAdvanced(token,'creatorPayouts',filters,{orderBy:[{fieldPath:'createdAt',direction:'DESCENDING'}],limit:100}); return {payouts:rows.map(v94PublicPayout)};
+}
+async function reconcilePayout(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified)))throw v94PayoutError('UNAUTHORIZED','Admin access required.',403); const payoutId=String(b.payoutId||''); const row=await fsGet(token,`creatorPayouts/${payoutId}`); if(!row)throw v94PayoutError('NOT_FOUND','Payout not found.',404); let payout={payoutId,...row.fields}; const transferId=String(payout.razorpayTransferId||''); if(!transferId){await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'reconciliation_required',reconciliationStatus:'required',failureCode:'MISSING_TRANSFER_ID',updatedAt:nowIso()}); return {status:'reconciliation_required',payout:{id:payoutId,...payout,status:'reconciliation_required'}};}
+  let transfer:any; try{transfer=await fetchTransfer(transferId);}catch(error:any){await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'reconciliation_required',reconciliationStatus:'required',failureCode:'PROVIDER_LOOKUP_FAILED',failureMessage:String(error?.message||'Provider lookup failed.').slice(0,300),updatedAt:nowIso()}); return {status:'reconciliation_required',payout:{id:payoutId,...payout,status:'reconciliation_required'}};}
+  const amount=v94SafeInt(transfer?.amount); const recipient=String(transfer?.recipient||''); if(amount!==v94SafeInt(payout.amountPaise)||recipient!==String(payout.razorpayAccountId||'')){await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'reconciliation_required',reconciliationStatus:'required',failureCode:'PROVIDER_MISMATCH',failureMessage:'Provider transfer amount or recipient does not match the payout.',updatedAt:nowIso()}); return {status:'reconciliation_required',payout:{id:payoutId,...payout,status:'reconciliation_required'}};}
+  const ps=String(transfer?.transfer_status||transfer?.status||''); if(ps==='processed'){await v94FinalizeProcessedPayout(token,payout,transfer,`admin:${uid}`);} else if(ps==='failed'){await v94ReleasePayoutReservation(token,payout,'PROVIDER_REJECTED','Provider reports that the transfer failed.',uid);} else if(ps==='reversed'||ps==='partially_reversed'){
+    await v94HandlePayoutReversal(token,transfer,`admin:${uid}`);
+  } else await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'processing',providerTransferStatus:ps,reconciliationStatus:'pending',updatedAt:nowIso()});
+  const final=await fsGet(token,`creatorPayouts/${payoutId}`); return {status:String(final?.fields?.status||'processing'),payout:{id:payoutId,...(final?.fields||payout)}};
+}
+async function v94HandlePayoutReversal(token:string,transfer:any,eventId:string){
+  const transferId=String(transfer?.id||''); const payouts=transferId?await fsRunQuery(token,'creatorPayouts',[fsFilter('razorpayTransferId','EQUAL',{stringValue:transferId})]):[]; let row=payouts[0]; if(!row){const notes=transfer?.notes||{}; const payoutId=String(notes.offscrpt_payout_id||''); if(payoutId)row=await fsGet(token,`creatorPayouts/${payoutId}`);} if(!row)return {ignored:'unmatched_provider_transfer'};
+  const payoutId=String(row.fields.payoutId||String(row.name).split('/').pop()); const amountReversed=v94SafeInt(transfer?.amount_reversed)||0; if(amountReversed<=0)return {ignored:'no_reversal_amount'}; const cumulativeRows=await fsRunQuery(token,'commerceVendorLedger',[fsFilter('payoutId','EQUAL',{stringValue:payoutId}),fsFilter('entryType','EQUAL',{stringValue:'payout_reversal'})]); const previous=cumulativeRows.reduce((n,r)=>n+(v94SafeInt(r.fields.amountPaise)||0),0); const original=v94SafeInt(row.fields.amountPaise)||0; const delta=Math.min(amountReversed,Math.max(0,original-previous)); if(delta<=0)return {ignored:'reversal_already_recorded'};
+  const reversalId=v94LedgerId('reversal_event',eventId); await v94AppendLedgerEntry(token,{ledgerEntryId:reversalId,creatorId:String(row.fields.creatorId||''),sellerId:String(row.fields.sellerId||''),orderId:null,paymentId:null,financialAllocationId:null,payoutId,refundId:null,entryType:'payout_reversal',entryDirection:'credit',amountPaise:delta,currency:'INR',balanceBucket:'available',status:'posted',source:'razorpay_route_transfer',sourceId:transferId,idempotencyKey:`payout_reversal:${eventId}`,effectiveAt:nowIso(),createdAt:nowIso(),updatedAt:nowIso()}); const fullyReversed=(previous+delta)>=original; await fsPatch(token,`creatorPayouts/${payoutId}`,{status:fullyReversed?'reversed':'reconciliation_required',reversedAt:fullyReversed?nowIso():undefined,providerTransferStatus:String(transfer?.transfer_status||transfer?.status||''),providerSettlementStatus:transfer?.settlement_status??null,reconciliationStatus:fullyReversed?'reconciled':'required',updatedAt:nowIso()}); return {payoutId,delta,fullyReversed};
+}
+async function handleRouteTransferWebhookPayout(token:string,eventType:string,transfer:any,eventId:string){
+  const transferId=String(transfer?.id||''); if(!transferId)return {ignored:'missing_transfer_id'}; const payouts=await fsRunQuery(token,'creatorPayouts',[fsFilter('razorpayTransferId','EQUAL',{stringValue:transferId})]); let row=payouts[0]; if(!row){const notes=transfer?.notes||{}; const payoutId=String(notes.offscrpt_payout_id||''); if(payoutId)row=await fsGet(token,`creatorPayouts/${payoutId}`);} if(!row)return {ignored:'unmatched_provider_transfer'};
+  const payout={payoutId:String(row.fields.payoutId||String(row.name).split('/').pop()),...row.fields}; const expected=v94SafeInt(payout.amountPaise); const actual=v94SafeInt(transfer?.amount); const recipient=String(transfer?.recipient||''); if(actual!==expected|| (recipient&&recipient!==String(payout.razorpayAccountId||''))){await fsPatch(token,`creatorPayouts/${payout.payoutId}`,{status:'reconciliation_required',reconciliationStatus:'required',failureCode:'PROVIDER_MISMATCH',failureMessage:'Verified Route webhook does not match the canonical payout.',updatedAt:nowIso()}); return {mismatch:true,payoutId:payout.payoutId};}
+  if(eventType==='transfer.processed')return v94FinalizeProcessedPayout(token,payout,transfer,eventId);
+  if(eventType==='transfer.failed'){await v94ReleasePayoutReservation(token,payout,'PROVIDER_REJECTED','Razorpay reports that the transfer failed.');return {payoutId:payout.payoutId,status:'failed'};}
+  if(eventType==='transfer.reversed'||eventType==='transfer.partially_reversed')return v94HandlePayoutReversal(token,transfer,eventId);
+  return {ignored:eventType};
+}
+
 async function fsCount(token:string, collectionId:string){
   const r=await fetch(`${firestoreBase()}:runAggregationQuery`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({structuredAggregationQuery:{structuredQuery:{from:[{collectionId}]},aggregations:[{alias:'count',count:{}}]}})});
   if(!r.ok){const text=await r.text();throw new Error(`Firestore count failed: ${r.status} ${text.slice(0,300)}`);}
@@ -469,7 +1073,7 @@ async function ensureFinancialAllocation(token:string,orderId:string, paymentId:
 }
 
 async function safeEnsureFinancialAllocation(token:string,orderId:string,paymentId:string){
-  try { return await ensureFinancialAllocation(token,orderId,paymentId); }
+  try { const allocation=await ensureFinancialAllocation(token,orderId,paymentId); await ensureSaleLedgerCredit(token,allocation); return allocation; }
   catch(error:any) {
     const allocationId=stableId('fin',orderId); const now=nowIso(); const fallback={allocationId,entryType:'sale',orderId,paymentId,financialStatus:'reconciliation_required',transferStatus:'not_started',lastError:String(error?.message||'Financial allocation failed.').slice(0,500),createdAt:now,updatedAt:now};
     const existing=await fsGet(token,`commerceFinancialAllocations/${allocationId}`).catch(()=>null);
@@ -478,6 +1082,9 @@ async function safeEnsureFinancialAllocation(token:string,orderId:string,payment
     return fallback;
   }
 }
+
+
+async function ensureSaleLedgerCredit(token:string,allocation:any){ return v94MaterializeSaleCredit(token,allocation); }
 
 async function processRefundWebhook(token:string,eventType:string,refundEntity:any,eventId:string){
   const refundId=String(refundEntity?.id||''); const providerPaymentId=String(refundEntity?.payment_id||''); const providerStatus=String(refundEntity?.status||'pending').toLowerCase(); const amountSubunits=Number(refundEntity?.amount||0); if(!refundId||!providerPaymentId||!Number.isSafeInteger(amountSubunits)||amountSubunits<=0) return {ignored:'invalid_refund_payload'};
@@ -503,6 +1110,7 @@ async function processRefundWebhook(token:string,eventType:string,refundEntity:a
   if(cumulativeIsFull){ reversal={commissionReversalSubunits:Math.max(0,Number(allocation.platformCommissionAmountSubunits)-previousCommissionReversed),creatorReversalSubunits:Math.max(0,Number(allocation.creatorNetAmountSubunits)-previousCreatorReversed)}; }
   const reversalId=stableId('finrev',refundId); const reversalExisting=await fsGet(token,`commerceFinancialAllocations/${reversalId}`);
   if(!reversalExisting){ const reversalEntry={allocationId:reversalId,entryType:'refund_reversal',originalAllocationId:allocation.allocationId,refundId,orderId,paymentId:String(payment.name).split('/').pop()!,creatorId:String(allocation.creatorId||''),sellerId:String(allocation.sellerId||''),razorpayAccountId:allocation.razorpayAccountId||null,productId:String(allocation.productId||''),priceId:String(allocation.priceId||''),grossAmount:-majorFromSubunits(providerAmount),grossAmountSubunits:-providerAmount,platformCommissionAmount:-majorFromSubunits(reversal.commissionReversalSubunits),platformCommissionAmountSubunits:-reversal.commissionReversalSubunits,creatorNetAmount:-majorFromSubunits(reversal.creatorReversalSubunits),creatorNetAmountSubunits:-reversal.creatorReversalSubunits,currency:canonicalCurrency,financialStatus:cumulativeIsFull?'reversed':'partially_reversed',transferStatus:'not_started',createdAt:now,updatedAt:now}; try{await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceFinancialAllocations/${reversalId}`,fields:fields(reversalEntry)}}]);}catch{}}
+  await v94CreateRefundLedgerEntry(token,allocation,refundId,Number(reversal.creatorReversalSubunits));
   const totalRefunded=existingRefunded; const orderRefundStatus=totalRefunded===canonicalGrossSubunits?'refunded':'partially_refunded'; const paymentIdLocal=String(payment.name).split('/').pop()!;
   await fsPatch(token,`commercePayments/${paymentIdLocal}`,{refundStatus:orderRefundStatus,refundAmount:majorFromSubunits(totalRefunded),updatedAt:now}); await fsPatch(token,`commerceOrders/${orderId}`,{status:orderRefundStatus,refundedAt:totalRefunded===canonicalGrossSubunits?now:undefined,refundAmount:majorFromSubunits(totalRefunded),updatedAt:now});
   await fsPatch(token,`commerceRefunds/${stableId('refund',refundId)}`,{financialStatus:cumulativeIsFull?'reversed':'partially_reversed',commissionReversalAmount:majorFromSubunits(reversal.commissionReversalSubunits),creatorReversalAmount:majorFromSubunits(reversal.creatorReversalSubunits),financialReversalId:reversalId,updatedAt:now});
@@ -711,26 +1319,22 @@ async function handleRazorpayRouteWebhook(req:any,res:any){
   if(!eventType) return res.status(200).json({received:true});
   const existing=await fsGet(token,`commerceWebhookEvents/${eventDocId}`);
   if(existing) return res.status(200).json({received:true,duplicate:true});
-  const accountId=String(payload?.account_id||payload?.payload?.transfer?.entity?.recipient||'');
   const transfer=payload?.payload?.transfer?.entity;
-  const recipient=String(transfer?.recipient||accountId);
-  if(recipient){
-    const sellers=await fsRunQuery(token,'creatorCommerceProfiles',[{field:{fieldPath:'razorpayAccountId'},op:'EQUAL',value:{stringValue:recipient}}]);
+  const accountId=String(payload?.account_id||transfer?.recipient||'');
+  if(['transfer.processed','transfer.failed','transfer.reversed','transfer.partially_reversed'].includes(eventType)){
+    await handleRouteTransferWebhookPayout(token,eventType,transfer,eventId);
+  }
+  if(accountId){
+    const sellers=await fsRunQuery(token,'creatorCommerceProfiles',[{field:{fieldPath:'razorpayAccountId'},op:'EQUAL',value:{stringValue:accountId}}]);
     if(sellers[0]){
       const creatorId=String(sellers[0].fields.creatorId||String(sellers[0].name).split('/').pop());
-      await fsPatch(token,`creatorCommerceProfiles/${creatorId}`,{
-        lastRouteEvent:eventType,lastRouteEventAt:nowIso(),
-        lastTransferId:String(transfer?.id||''),lastTransferStatus:String(transfer?.status||''),
-        lastSettlementId:String(transfer?.recipient_settlement_id||'')
-      });
+      await fsPatch(token,`creatorCommerceProfiles/${creatorId}`,{lastRouteEvent:eventType,lastRouteEventAt:nowIso(),lastTransferId:String(transfer?.id||''),lastTransferStatus:String(transfer?.status||transfer?.transfer_status||''),lastSettlementId:String(transfer?.recipient_settlement_id||'')});
     }
   }
-  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({
-    event:eventType,provider:'razorpay_route',providerEventId:eventId,accountId,createdAt:nowIso(),
-    metadata:{transferId:String(transfer?.id||''),status:String(transfer?.status||'')}
-  })}}]);
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({event:eventType,provider:'razorpay_route',providerEventId:eventId,accountId,createdAt:nowIso(),status:'processed',metadata:{transferId:String(transfer?.id||''),status:String(transfer?.status||transfer?.transfer_status||'')}})}}]);
   return res.status(200).json({received:true});
 }
+
 
 function fsFilter(fieldPath:string, op:string, v:any){
   return {field:{fieldPath},op,value:v};
@@ -927,5 +1531,5 @@ export default async function handler(req:VercelRequest,res:VercelResponse){
   if(req.method!=='POST')return res.status(405).json({error:'Method not allowed'});
   if(action==='razorpayWebhook') return handleRazorpayWebhook(req,res);
   if(action==='razorpayRouteWebhook') return handleRazorpayRouteWebhook(req,res);
-  try{const raw=await readRawBody(req); let body:any={}; try{body=raw?JSON.parse(raw):{};}catch{throw new Error('Invalid JSON request body.');} const identity=await verifyFirebaseToken(authHeader(req)), uid=identity.uid, token=await serviceToken(); let out:any; if(action==='createProduct')out=await createProduct(token,uid,body); else if(action==='createPrice')out=await createPrice(token,uid,body); else if(action==='setProductStatus')out=await setProductStatus(token,uid,body); else if(action==='setProductVisibility')out=await setProductVisibility(token,uid,body); else if(action==='createCheckout')out=await createCheckout(token,uid,body); else if(action==='createSeller')out=await createSeller(token,uid,body); else if(action==='getSeller')out=await getSeller(token,uid); else if(action==='refreshSeller')out=await refreshSeller(token,uid); else if(action==='enableSeller')out=await enableSeller(token,uid); else if(action==='disableSeller')out=await disableSeller(token,uid); else if(action==='adminListSellers')out=await adminListSellers(token,uid,identity.email,identity.emailVerified); else if(action==='adminSetSellerStatus')out=await adminSetSellerStatus(token,uid,body,identity.email,identity.emailVerified); else if(action==='confirmRazorpayPayment'||action==='verifyPayment')out=await confirmRazorpayPayment(token,uid,body); else if(action==='paymentStatus')out=await getRazorpayPaymentStatus(token,uid,body); else if(action==='checkAccess')out=await checkAccess(token,uid,body); else if(action==='diagnostics')out=await commerceDiagnostics(token,uid,identity.email,identity.emailVerified); else if(action==='createCommissionRule')out=await createCommissionRule(token,uid,body,identity.email,identity.emailVerified); else if(action==='updateCommissionRule')out=await updateCommissionRule(token,uid,body,identity.email,identity.emailVerified); else if(action==='setCommissionRuleStatus')out=await setCommissionRuleStatus(token,uid,body,identity.email,identity.emailVerified); else if(action==='listCommissionRules'){if(!(await verifyCommerceAdmin(token,uid,identity.email,identity.emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;} out={rules:await listAllCommissionRules(token)};} else if(action==='simulateCommission')out=await simulateCommission(token,uid,body,identity.email,identity.emailVerified); else if(action==='getOrderFinancials')out=await getOrderFinancials(token,uid,body,identity.email,identity.emailVerified); else if(action==='getCreatorEarnings')out=await getCreatorEarnings(token,uid); else if(action==='adminFinancialSummary')out=await adminFinancialSummary(token,uid,body,identity.email,identity.emailVerified); else if(action==='reconcileCommission')out=await reconcileCommission(token,uid,body,identity.email,identity.emailVerified); else return res.status(400).json({error:'Unknown commerce action.'}); return res.status(200).json(out);}catch(e:any){const status=Number(e?.statusCode); return res.status(status>=400&&status<=599?status:400).json({error:e?.message||'Commerce request failed.'});}
+  try{const raw=await readRawBody(req); let body:any={}; try{body=raw?JSON.parse(raw):{};}catch{throw new Error('Invalid JSON request body.');} const identity=await verifyFirebaseToken(authHeader(req)), uid=identity.uid, token=await serviceToken(); let out:any; if(action==='createProduct')out=await createProduct(token,uid,body); else if(action==='createPrice')out=await createPrice(token,uid,body); else if(action==='setProductStatus')out=await setProductStatus(token,uid,body); else if(action==='setProductVisibility')out=await setProductVisibility(token,uid,body); else if(action==='createCheckout')out=await createCheckout(token,uid,body); else if(action==='createSeller')out=await createSeller(token,uid,body); else if(action==='getSeller')out=await getSeller(token,uid); else if(action==='refreshSeller')out=await refreshSeller(token,uid); else if(action==='enableSeller')out=await enableSeller(token,uid); else if(action==='disableSeller')out=await disableSeller(token,uid); else if(action==='adminListSellers')out=await adminListSellers(token,uid,identity.email,identity.emailVerified); else if(action==='adminSetSellerStatus')out=await adminSetSellerStatus(token,uid,body,identity.email,identity.emailVerified); else if(action==='confirmRazorpayPayment'||action==='verifyPayment')out=await confirmRazorpayPayment(token,uid,body); else if(action==='paymentStatus')out=await getRazorpayPaymentStatus(token,uid,body); else if(action==='checkAccess')out=await checkAccess(token,uid,body); else if(action==='diagnostics')out=await commerceDiagnostics(token,uid,identity.email,identity.emailVerified); else if(action==='createCommissionRule')out=await createCommissionRule(token,uid,body,identity.email,identity.emailVerified); else if(action==='updateCommissionRule')out=await updateCommissionRule(token,uid,body,identity.email,identity.emailVerified); else if(action==='setCommissionRuleStatus')out=await setCommissionRuleStatus(token,uid,body,identity.email,identity.emailVerified); else if(action==='listCommissionRules'){if(!(await verifyCommerceAdmin(token,uid,identity.email,identity.emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;} out={rules:await listAllCommissionRules(token)};} else if(action==='simulateCommission')out=await simulateCommission(token,uid,body,identity.email,identity.emailVerified); else if(action==='getOrderFinancials')out=await getOrderFinancials(token,uid,body,identity.email,identity.emailVerified); else if(action==='getCreatorEarnings')out=await getCreatorEarnings(token,uid); else if(action==='adminFinancialSummary')out=await adminFinancialSummary(token,uid,body,identity.email,identity.emailVerified); else if(action==='reconcileCommission')out=await reconcileCommission(token,uid,body,identity.email,identity.emailVerified); else if(action==='getCreatorBalance')out=await getCreatorBalance(token,uid); else if(action==='getCreatorPayouts')out=await listCreatorPayouts(token,uid); else if(action==='getPayout')out=await getPayout(token,uid,body,identity.email,identity.emailVerified); else if(action==='createPayout')out=await createPayout(token,uid,body); else if(action==='approvePayout')out=await approvePayout(token,uid,body,identity.email,identity.emailVerified); else if(action==='rejectPayout')out=await rejectPayout(token,uid,body,identity.email,identity.emailVerified); else if(action==='adminListPayouts')out=await adminListPayouts(token,uid,body,identity.email,identity.emailVerified); else if(action==='reconcilePayout')out=await reconcilePayout(token,uid,body,identity.email,identity.emailVerified); else if(action==='getFinanceSummary'||action==='adminFinanceReport')out=await v95FinanceReport(token,uid,body,identity.email,identity.emailVerified); else if(action==='getRevenueSeries'){const r=await v95FinanceReport(token,uid,body,identity.email,identity.emailVerified);out={series:r.series.revenue,meta:r.meta,generatedAt:r.summary.generatedAt};} else if(action==='getCreatorFinance')out=await v95ListFinanceDimension(token,uid,body,identity.email,identity.emailVerified,'creator'); else if(action==='getProductFinance')out=await v95ListFinanceDimension(token,uid,body,identity.email,identity.emailVerified,'product'); else if(action==='getOrderFinance')out=await v95ListFinanceDimension(token,uid,body,identity.email,identity.emailVerified,'order'); else if(action==='getPayoutFinance')out=await v95ListFinanceDimension(token,uid,body,identity.email,identity.emailVerified,'payout'); else if(action==='getRefundFinance')out=await v95ListFinanceDimension(token,uid,body,identity.email,identity.emailVerified,'refund'); else if(action==='getFinanceHealth')out=await v95FinanceHealth(token,uid,body,identity.email,identity.emailVerified); else if(action==='exportFinance')out=await v95Export(token,uid,body,identity.email,identity.emailVerified); else return res.status(400).json({error:'Unknown commerce action.'}); return res.status(200).json(out);}catch(e:any){const status=Number(e?.statusCode); return res.status(status>=400&&status<=599?status:400).json({error:e?.message||'Commerce request failed.'});}
 }
