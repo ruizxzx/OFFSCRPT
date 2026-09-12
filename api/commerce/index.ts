@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '../../server/vercel-types.js';
 import crypto from 'node:crypto';
+import { getRazorpayConfig, isRazorpayConfigured, razorpayProvider, verifyCapturedPayment } from '../../server/razorpay.js';
 
 const projectId = () => process.env.GOOGLE_CLOUD_PROJECT || process.env.VITE_FIREBASE_PROJECT_ID || 'krishficient-portfolio';
 const apiKey = () => process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
@@ -89,9 +90,9 @@ async function verifyCommerceAdmin(token:string,uid:string,email?:string,emailVe
 }
 async function verifyFirebaseToken(idToken:string){ if(!idToken) throw new Error('Authentication required.'); if(!apiKey()) throw new Error('FIREBASE_WEB_API_KEY is not configured on the server.'); const r=await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey())}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({idToken})}); const j:any=await r.json(); if(!r.ok||!j.users?.[0]?.localId) throw new Error('Invalid authentication token.'); const account=j.users[0]; return {uid:String(account.localId),email:String(account.email||''),emailVerified:Boolean(account.emailVerified)}; }
 function authHeader(req:VercelRequest){return String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim();}
-function testMode(){return String(process.env.COMMERCE_PAYMENT_MODE||'test').toLowerCase()==='test';}
 function amountOk(n:any){return Number.isSafeInteger(n)&&n>=0&&n<=10_000_000_000;}
 function idempotencyId(userId:string, key:string){return crypto.createHash('sha256').update(`${userId}:${key}`).digest('hex').slice(0,48);}
+function stableId(prefix:string,source:string){ return `${prefix}_${crypto.createHash('sha256').update(source).digest('hex').slice(0,40)}`; }
 
 async function checkAccess(token:string,uid:string,b:any){
   const resourceType=String(b.resourceType||'').trim(), resourceId=String(b.resourceId||'').trim(); if(!resourceType||!resourceId) throw new Error('resourceType and resourceId are required.');
@@ -129,31 +130,139 @@ async function createPrice(token:string,uid:string,b:any){
   await fsCommit(token,[{create:{name:`${firestoreBase()}/commercePrices/${priceId}`,fields:fields(price)}},{update:{name:`${firestoreBase()}/commerceProducts/${price.productId}`,fields:fields({priceIds:[...(Array.isArray(product.fields.priceIds)?product.fields.priceIds:[]),priceId],updatedAt:nowIso()})}}]); return {price};
 }
 
+
+async function finalizeVerifiedRazorpayPayment(token:string,orderId:string,paymentId:string,uid?:string,eventKey?:string,providerEvent?:string){
+  const order=await fsGet(token,`commerceOrders/${orderId}`); const payment=await fsGet(token,`commercePayments/${String(order?.fields?.paymentId||'')}`);
+  if(!order) throw new Error('Order not found.');
+  if(uid && order.fields.customerId!==uid) throw new Error('Order ownership check failed.');
+  const internalPaymentId=String(order.fields.paymentId||''); if(!internalPaymentId || !payment || payment.fields.customerId!==order.fields.customerId || payment.fields.orderId!==orderId) throw new Error('Payment linkage is invalid.');
+  if(String(payment.fields.provider||'')!=='razorpay' || String(payment.fields.razorpayOrderId||'')!==String(order.fields.razorpayOrderId||'')) throw new Error('Provider linkage is invalid.');
+  if(order.fields.status==='paid'){
+    const eid=Array.isArray(order.fields.entitlementIds)?String(order.fields.entitlementIds[0]||''):''; const ent=eid?await fsGet(token,`entitlements/${eid}`):null;
+    return {order:{id:orderId,...order.fields},payment:{id:internalPaymentId,...payment.fields},entitlement:ent?{id:eid,...ent.fields}:undefined};
+  }
+  const providerPayment=await verifyCapturedPayment(order,paymentId);
+  const item=Array.isArray(order.fields.items)?order.fields.items[0]:null; if(!item?.productId)throw new Error('Order item is invalid.');
+  const entitlementId=stableId('ent',orderId), ledgerId=stableId('rev',orderId), auditId=stableId('audit',`${orderId}:${paymentId}:paid`);
+  const now=nowIso();
+  const ent={userId:String(order.fields.customerId),sourceType:'purchase',sourceId:orderId,resourceType:'product',resourceId:String(item.productId),status:'active',grantedAt:now,startsAt:now,orderId};
+  const gross=Number(order.fields.total||0);
+  const revenue={creatorId:String(order.fields.creatorId||''),orderId,transactionId:String(paymentId),gross,discounts:Number(order.fields.discount||0),tax:Number(order.fields.tax||0),paymentFees:0,platformFee:0,refundAmount:0,netCreatorAmount:gross,type:'sale',status:'posted',currency:String(order.fields.currency||'INR'),createdAt:now};
+  const eventDocId=eventKey?stableId('rp_evt',eventKey):stableId('rp_evt',`${orderId}:${paymentId}`);
+  const audit={actorId:String(order.fields.customerId),actorType:'customer',targetType:'order',targetId:orderId,event:'paymentPaid',timestamp:now,metadata:{provider:'razorpay',providerPaymentId:String(paymentId),providerEvent:String(providerEvent||'')}};
+  const writes:any[]=[
+    {update:{name:`${firestoreBase()}/commercePayments/${internalPaymentId}`,fields:fields({status:'paid',provider:'razorpay',razorpayPaymentId:String(paymentId),razorpayPaymentStatus:String(providerPayment?.status||'captured'),paidAt:now,verifiedAt:now,updatedAt:now,testMode:String(process.env.RAZORPAY_ENVIRONMENT||'').toLowerCase()!=='production'})}},
+    {update:{name:`${firestoreBase()}/commerceOrders/${orderId}`,fields:fields({status:'paid',paymentId:internalPaymentId,entitlementIds:[entitlementId],paidAt:now,updatedAt:now,metadata:{...(order.fields.metadata||{}),paymentProvider:'razorpay'}})}},
+    {create:{name:`${firestoreBase()}/entitlements/${entitlementId}`,fields:fields(ent)}},
+    {create:{name:`${firestoreBase()}/creatorRevenue/${ledgerId}`,fields:fields(revenue)}},
+    {create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({event:'razorpay.payment.succeeded',orderId,paymentId:String(paymentId),entitlementId,providerEventId:String(eventKey||''),createdAt:now})}},
+    {create:{name:`${firestoreBase()}/commerceAuditLogs/${auditId}`,fields:fields(audit)}}
+  ];
+  try{ await fsCommit(token,writes); } catch(err:any){
+    const refreshed=await fsGet(token,`commerceOrders/${orderId}`);
+    if(refreshed?.fields?.status==='paid'){
+      const eid=Array.isArray(refreshed.fields.entitlementIds)?String(refreshed.fields.entitlementIds[0]||''):''; const ent2=eid?await fsGet(token,`entitlements/${eid}`):null;
+      const pay2=await fsGet(token,`commercePayments/${internalPaymentId}`);
+      return {order:{id:orderId,...refreshed.fields},payment:{id:internalPaymentId,...(pay2?.fields||{})},entitlement:ent2?{id:eid,...ent2.fields}:undefined};
+    }
+    throw err;
+  }
+  const finalOrder=await fsGet(token,`commerceOrders/${orderId}`),finalPayment=await fsGet(token,`commercePayments/${internalPaymentId}`),finalEnt=await fsGet(token,`entitlements/${entitlementId}`);
+  return {order:{id:orderId,...(finalOrder?.fields||order.fields)},payment:{id:internalPaymentId,...(finalPayment?.fields||payment.fields)},entitlement:{id:entitlementId,...(finalEnt?.fields||ent)}};
+}
+
 async function createCheckout(token:string,uid:string,b:any){
-  const product=await fsGet(token,`commerceProducts/${String(b.productId||'')}`); const price=await fsGet(token,`commercePrices/${String(b.priceId||'')}`); if(!product||!price)throw new Error('Product or price not found.'); if(product.fields.status!=='active')throw new Error('Product is not available.'); if(price.fields.productId!==product.name.split('/').pop())throw new Error('Price does not belong to product.'); if(String(price.fields.currency||'').toUpperCase()!==String(product.fields.currency||'').toUpperCase())throw new Error('Price currency does not match product currency.'); if(price.fields.active!==true)throw new Error('Price is inactive.'); if(!amountOk(Number(price.fields.amount)))throw new Error('Invalid price.');
-  const key=String(b.idempotencyKey||'').trim(); if(key.length<8||key.length>200)throw new Error('Valid idempotencyKey is required.'); const idem=idempotencyId(uid,key); const idemName=`commerceIdempotency/${idem}`; const idemDoc=await fsGet(token,idemName); if(idemDoc) {const orderId=String(idemDoc.fields.orderId||''); const paymentId=String(idemDoc.fields.paymentId||''); const order=orderId?await fsGet(token,`commerceOrders/${orderId}`):null; const payment=paymentId?await fsGet(token,`commercePayments/${paymentId}`):null; if(order&&payment)return {order:{id:orderId,...order.fields},payment:{id:paymentId,...payment.fields},entitlement:undefined};}
-  const orderId=crypto.randomUUID(),paymentId=crypto.randomUUID(); const title=String(product.fields.title||'Untitled'); const item={productId:product.name.split('/').pop(),priceId:price.name.split('/').pop(),quantity:1,unitAmount:Number(price.fields.amount),lineTotal:Number(price.fields.amount),title,type:String(product.fields.type||'digital_product')};
-  const order={customerId:uid,creatorId:String(product.fields.creatorId||''),items:[item],subtotal:Number(price.fields.amount),discount:0,tax:0,fees:0,total:Number(price.fields.amount),currency:String(price.fields.currency||product.fields.currency||'INR'),status:'pending_payment',createdAt:nowIso(),updatedAt:nowIso(),metadata:{testMode:testMode()}};
-  const payment={orderId,customerId:uid,amount:Number(order.total),currency:order.currency,status:'pending',provider:testMode()?'offscript_test':'unconfigured',testMode:testMode(),createdAt:nowIso(),updatedAt:nowIso()};
-  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceOrders/${orderId}`,fields:fields(order)}},{create:{name:`${firestoreBase()}/commercePayments/${paymentId}`,fields:fields(payment)}},{create:{name:`${firestoreBase()}/${idemName}`,fields:fields({userId:uid,orderId,paymentId,createdAt:nowIso()})}}]);
-  return {order:{id:orderId,...order},payment:{id:paymentId,...payment}};
+  if(!isRazorpayConfigured()) { const err:any=new Error('Razorpay payment configuration is not ready.'); err.statusCode=503; throw err; }
+  const product=await fsGet(token,`commerceProducts/${String(b.productId||'')}`);
+  const price=await fsGet(token,`commercePrices/${String(b.priceId||'')}`);
+  if(!product||!price)throw new Error('Product or price not found.');
+  if(product.fields.status!=='active' || product.fields.visibility!=='public')throw new Error('Product is not available.');
+  if(price.fields.productId!==product.name.split('/').pop())throw new Error('Price does not belong to product.');
+  if(String(price.fields.currency||'').toUpperCase()!==String(product.fields.currency||'').toUpperCase())throw new Error('Price currency does not match product currency.');
+  if(price.fields.active!==true)throw new Error('Price is inactive.');
+  if(String(price.fields.billingType||'one_time')!=='one_time')throw new Error('Recurring products are not supported by V90 one-time checkout.');
+  const amount=Number(price.fields.amount),currency=String(price.fields.currency||product.fields.currency||'INR').toUpperCase();
+  razorpayProvider.amountSubunit(amount,currency);
+  const ownership=await fsRunQuery(token,'entitlements',[{field:{fieldPath:'userId'},op:'EQUAL',value:{stringValue:uid}},{field:{fieldPath:'resourceType'},op:'EQUAL',value:{stringValue:product.name.split('/').pop()}}]);
+  if(ownership.some(x=>x.fields.status==='active')) throw new Error('You already own this product.');
+  const key=String(b.idempotencyKey||'').trim(); if(key.length<8||key.length>200)throw new Error('Valid idempotencyKey is required.');
+  const idem=idempotencyId(uid,key), idemName=`commerceIdempotency/${idem}`, idemDoc=await fsGet(token,idemName);
+  if(idemDoc){
+    const orderId=String(idemDoc.fields.orderId||''),paymentId=String(idemDoc.fields.paymentId||''); const order=orderId?await fsGet(token,`commerceOrders/${orderId}`):null; const payment=paymentId?await fsGet(token,`commercePayments/${paymentId}`):null;
+    if(order&&payment) return {order:{id:orderId,...order.fields},payment:{id:paymentId,...payment.fields},entitlement:undefined};
+  }
+  const orderId=crypto.randomUUID(),paymentId=crypto.randomUUID();
+  const title=String(product.fields.title||'Untitled'), productId=product.name.split('/').pop()!, priceId=price.name.split('/').pop()!;
+  const item={productId,priceId,quantity:1,unitAmount:amount,lineTotal:amount,title,type:String(product.fields.type||'digital_product')};
+  const createdAt=nowIso();
+  const order:any={customerId:uid,creatorId:String(product.fields.creatorId||''),items:[item],subtotal:amount,discount:0,tax:0,fees:0,total:amount,currency,status:'pending_payment',createdAt,updatedAt:createdAt,provider:'razorpay',metadata:{paymentProvider:'razorpay',checkoutIdempotencyKey:key}};
+  const payment={orderId,customerId:uid,amount,currency,status:'pending',provider:'razorpay',testMode:String(process.env.RAZORPAY_ENVIRONMENT||'').toLowerCase()!=='production',createdAt,updatedAt:createdAt};
+  const providerOrder=await razorpayProvider.request('/orders',{method:'POST',body:JSON.stringify({amount:razorpayProvider.amountSubunit(amount,currency),currency,receipt:`OFF_${orderId.slice(0,30)}`,notes:{offscrptOrderId:orderId,offscrptProductId:productId}})});
+  const razorpayOrderId=String(providerOrder?.id||''); if(!razorpayOrderId)throw new Error('Razorpay did not return an order ID.');
+  order.razorpayOrderId=razorpayOrderId; order.metadata={...order.metadata,razorpayOrderId};
+  (payment as any).razorpayOrderId=razorpayOrderId;
+  await fsCommit(token,[
+    {create:{name:`${firestoreBase()}/commerceOrders/${orderId}`,fields:fields(order)}},
+    {create:{name:`${firestoreBase()}/commercePayments/${paymentId}`,fields:fields(payment)}},
+    {create:{name:`${firestoreBase()}/${idemName}`,fields:fields({userId:uid,orderId,paymentId,razorpayOrderId,createdAt})}}
+  ]);
+  return {order:{id:orderId,...order},payment:{id:paymentId,...payment},checkout:{keyId:String(razorpayProvider.config().keyId),razorpayOrderId,orderId,amount:razorpayProvider.amountSubunit(amount,currency),currency,name:'OFFSCRPT',description:title,prefill:{email:String((await fsGet(token,`users/${uid}`))?.fields?.email||'')}}};
 }
 
-async function confirmTestPayment(token:string,uid:string,b:any){
-  if(!testMode())throw new Error('Test payment mode is disabled. Configure a real payment provider before using production payments.');
-  const orderId=String(b.orderId||''),paymentId=String(b.paymentId||''); const orderSnap=await fsGet(token,`commerceOrders/${orderId}`),paymentSnap=await fsGet(token,`commercePayments/${paymentId}`); if(!orderSnap||!paymentSnap)throw new Error('Order or payment not found.'); if(orderSnap.fields.customerId!==uid||paymentSnap.fields.customerId!==uid)throw new Error('Order ownership check failed.'); if(paymentSnap.fields.orderId!==orderId)throw new Error('Payment does not match order.'); if(orderSnap.fields.status==='paid'){const eid=Array.isArray(orderSnap.fields.entitlementIds)?orderSnap.fields.entitlementIds[0]:''; const ent=eid?await fsGet(token,`entitlements/${eid}`):null; return {order:{id:orderId,...orderSnap.fields},payment:{id:paymentId,...paymentSnap.fields},entitlement:ent?{id:eid,...ent.fields}:undefined};}
-  const key=String(b.idempotencyKey||'').trim(); if(key.length<8||key.length>200)throw new Error('Valid idempotencyKey is required.'); const eventId=idempotencyId(uid,`confirm:${key}`),event=await fsGet(token,`commerceWebhookEvents/${eventId}`); if(event){const entId=String(event.fields.entitlementId||''); const ent=entId?await fsGet(token,`entitlements/${entId}`):null; return {order:{id:orderId,...orderSnap.fields},payment:{id:paymentId,...paymentSnap.fields},entitlement:ent?{id:entId,...ent.fields}:undefined};}
-  const item=Array.isArray(orderSnap.fields.items)?orderSnap.fields.items[0]:null; if(!item?.productId)throw new Error('Order item is invalid.');
-  const entitlementId=crypto.randomUUID(),ledgerId=crypto.randomUUID(); const entitlement={userId:uid,sourceType:'purchase',sourceId:orderId,resourceType:'product',resourceId:String(item.productId),status:'active',grantedAt:nowIso(),startsAt:nowIso(),orderId}; const gross=Number(orderSnap.fields.total||0); const revenue={creatorId:String(orderSnap.fields.creatorId||''),orderId,transactionId:paymentId,gross,discounts:Number(orderSnap.fields.discount||0),tax:Number(orderSnap.fields.tax||0),paymentFees:Number(orderSnap.fields.fees||0),platformFee:0,refundAmount:0,netCreatorAmount:gross,type:'sale',status:'posted',currency:String(orderSnap.fields.currency||'INR'),createdAt:nowIso()};
-  const audit={actorId:uid,actorType:'customer',targetType:'order',targetId:orderId,event:'paymentPaid',timestamp:nowIso(),metadata:{testMode:true}};
-  await fsCommit(token,[{update:{name:`${firestoreBase()}/commercePayments/${paymentId}`,fields:fields({status:'paid',paidAt:nowIso(),updatedAt:nowIso()})}},{update:{name:`${firestoreBase()}/commerceOrders/${orderId}`,fields:fields({status:'paid',paymentId,entitlementIds:[entitlementId],paidAt:nowIso(),updatedAt:nowIso()})}},{create:{name:`${firestoreBase()}/entitlements/${entitlementId}`,fields:fields(entitlement)}},{create:{name:`${firestoreBase()}/creatorRevenue/${ledgerId}`,fields:fields(revenue)}},{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventId}`,fields:fields({event:'test.payment.succeeded',orderId,paymentId,entitlementId,createdAt:nowIso()})}},{create:{name:`${firestoreBase()}/commerceAuditLogs/${crypto.randomUUID()}`,fields:fields(audit)}},{create:{name:`${firestoreBase()}/users/${uid}/notifications/commerce_${crypto.randomUUID()}`,fields:fields({type:'commerce_purchase',actorId:uid,actorUsername:String((await fsGet(token,`users/${uid}`))?.fields?.username||''),actorName:'OFFSCRPT Commerce',actorAvatar:'',message:'Your test purchase was completed.',targetType:'commerce_order',targetId:orderId,read:false,createdAt:nowIso()})}}]);
-  return {order:{id:orderId,status:'paid',customerId:uid,creatorId:orderSnap.fields.creatorId,items:orderSnap.fields.items,subtotal:orderSnap.fields.subtotal,discount:orderSnap.fields.discount,tax:orderSnap.fields.tax,fees:orderSnap.fields.fees,total:orderSnap.fields.total,currency:orderSnap.fields.currency,paymentId,entitlementIds:[entitlementId],paidAt:nowIso(),createdAt:orderSnap.fields.createdAt},payment:{id:paymentId,status:'paid',orderId,customerId:uid,amount:paymentSnap.fields.amount,currency:paymentSnap.fields.currency,testMode:true,provider:'offscript_test',paidAt:nowIso()},entitlement:{id:entitlementId,...entitlement}};
+async function confirmRazorpayPayment(token:string,uid:string,b:any){
+  if(!isRazorpayConfigured()) { const err:any=new Error('Razorpay payment configuration is not ready.'); err.statusCode=503; throw err; }
+  const orderId=String(b.orderId||''), paymentId=String(b.razorpayPaymentId||b.paymentId||''), razorpayOrderId=String(b.razorpayOrderId||''), signature=String(b.razorpaySignature||'');
+  if(!orderId||!paymentId||!razorpayOrderId||!signature)throw new Error('Payment verification data is incomplete.');
+  const order=await fsGet(token,`commerceOrders/${orderId}`); if(!order||order.fields.customerId!==uid)throw new Error('Order not found.');
+  if(String(order.fields.razorpayOrderId||order.fields.metadata?.razorpayOrderId||'')!==razorpayOrderId)throw new Error('Razorpay order mismatch.');
+  if(!razorpayProvider.verifyPaymentSignature(razorpayOrderId,paymentId,signature))throw new Error('Razorpay payment signature verification failed.');
+  const providerPayment=await verifyCapturedPayment(order,paymentId);
+  return finalizeVerifiedRazorpayPayment(token,orderId,paymentId,uid,undefined,'handler.payment.succeeded');
 }
 
-async function refundTest(token:string,uid:string,b:any){
-  if(!testMode())throw new Error('Refund test mode is disabled. Configure a payment provider before production refunds.'); const orderId=String(b.orderId||''); const order=await fsGet(token,`commerceOrders/${orderId}`); if(!order||order.fields.customerId!==uid)throw new Error('Order not found.'); if(order.fields.status!=='paid'&&order.fields.status!=='partially_refunded')throw new Error('Only paid orders can be refunded.'); const key=String(b.idempotencyKey||'').trim(); if(key.length<8||key.length>200)throw new Error('Valid idempotencyKey is required.'); const eventId=idempotencyId(uid,`refund:${key}`),existingEvent=await fsGet(token,`commerceIdempotency/${eventId}`); if(existingEvent){return {refundId:String(existingEvent.fields.refundId||''),status:'completed',orderStatus:'refunded',entitlementStatus:'refunded'};} const eid=Array.isArray(order.fields.entitlementIds)?String(order.fields.entitlementIds[0]||''):''; const refundId=crypto.randomUUID(),ledgerId=crypto.randomUUID(); const ent=eid?await fsGet(token,`entitlements/${eid}`):null; const writes:any[]=[{create:{name:`${firestoreBase()}/commerceRefunds/${refundId}`,fields:fields({orderId,customerId:uid,amount:Number(order.fields.total||0),currency:order.fields.currency,status:'completed',reason:String(b.reason||'Customer requested refund').slice(0,500),createdAt:nowIso(),completedAt:nowIso()})}},{update:{name:`${firestoreBase()}/commerceOrders/${orderId}`,fields:fields({status:'refunded',refundedAt:nowIso(),updatedAt:nowIso()})}},{update:{name:`${firestoreBase()}/commercePayments/${String(order.fields.paymentId||'')}`,fields:fields({status:'refunded',refundedAt:nowIso(),updatedAt:nowIso()})}},{create:{name:`${firestoreBase()}/creatorRevenue/${ledgerId}`,fields:fields({creatorId:String(order.fields.creatorId||''),orderId,transactionId:refundId,gross:0,discounts:0,tax:0,paymentFees:0,platformFee:0,refundAmount:Number(order.fields.total||0),netCreatorAmount:-Number(order.fields.total||0),type:'refund',status:'posted',currency:String(order.fields.currency||'INR'),createdAt:nowIso()})}},{create:{name:`${firestoreBase()}/commerceAuditLogs/${crypto.randomUUID()}`,fields:fields({actorId:uid,actorType:'customer',targetType:'order',targetId:orderId,event:'refundCompleted',timestamp:nowIso(),metadata:{refundId}})}},{create:{name:`${firestoreBase()}/commerceIdempotency/${eventId}`,fields:fields({userId:uid,orderId,refundId,createdAt:nowIso()})}},{create:{name:`${firestoreBase()}/users/${uid}/notifications/commerce_${crypto.randomUUID()}`,fields:fields({type:'commerce_refund',actorId:uid,actorUsername:'',actorName:'OFFSCRPT Commerce',actorAvatar:'',message:'Your test refund was completed.',targetType:'commerce_order',targetId:orderId,read:false,createdAt:nowIso()})}}]; if(ent){writes.push({update:{name:`${firestoreBase()}/entitlements/${eid}`,fields:fields({status:'refunded',revokedAt:nowIso()})}});} await fsCommit(token,writes); return {refundId,status:'completed',orderStatus:'refunded',entitlementStatus:ent?'refunded':undefined};
+
+async function getRazorpayPaymentStatus(token:string,uid:string,b:any){
+  if(!isRazorpayConfigured()) { const err:any=new Error('Razorpay payment configuration is not ready.'); err.statusCode=503; throw err; }
+  const orderId=String(b.orderId||''); if(!orderId)throw new Error('Order ID is required.');
+  const order=await fsGet(token,`commerceOrders/${orderId}`);
+  if(!order||order.fields.customerId!==uid)throw new Error('Order not found.');
+  const providerOrderId=String(order.fields.razorpayOrderId||order.fields.metadata?.razorpayOrderId||'');
+  if(!providerOrderId)throw new Error('Razorpay order reference is missing.');
+  const providerOrder=await razorpayProvider.fetchOrder(providerOrderId);
+  const expected=razorpayProvider.amountSubunit(Number(order.fields.total||0),String(order.fields.currency||'INR'));
+  if(Number(providerOrder?.amount)!==expected || String(providerOrder?.currency||'').toUpperCase()!==String(order.fields.currency||'INR').toUpperCase()) throw new Error('Razorpay order integrity check failed.');
+  return {order:{id:orderId,...order.fields},provider:{orderId:providerOrderId,status:String(providerOrder?.status||'unknown'),amount:Number(providerOrder?.amount||0),currency:String(providerOrder?.currency||'')}};
 }
 
+async function handleRazorpayWebhook(req:any,res:any){
+  if(req.method!=='POST') return res.status(405).json({error:'Method not allowed'});
+  if(!String(process.env.RAZORPAY_WEBHOOK_SECRET||'')) return res.status(503).json({error:'Razorpay webhook is not configured.'});
+  const raw=String(req.rawBody||''); if(!raw) return res.status(400).json({error:'Raw webhook body is required.'});
+  const signature=String(req.headers['x-razorpay-signature']||'');
+  if(!razorpayProvider.verifyWebhookSignature(raw,signature)) return res.status(401).json({error:'Invalid webhook signature.'});
+  let payload:any; try{payload=JSON.parse(raw);}catch{return res.status(400).json({error:'Invalid webhook payload.'});}
+  const eventId=String(req.headers['x-razorpay-event-id']||payload?.id||crypto.createHash('sha256').update(raw).digest('hex'));
+  const eventType=String(payload?.event||'');
+  const token=await serviceToken();
+  if(!eventType)return res.status(200).json({received:true});
+  const paymentEntity=payload?.payload?.payment?.entity||payload?.payload?.payment?.entity;
+  const paymentId=String(paymentEntity?.id||'');
+  const razorpayOrderId=String(paymentEntity?.order_id||'');
+  if(eventType==='payment.captured' && paymentId && razorpayOrderId){
+    const orders=await fsRunQuery(token,'commerceOrders',[{field:{fieldPath:'razorpayOrderId'},op:'EQUAL',value:{stringValue:razorpayOrderId}}]);
+    const order=orders[0];
+    if(!order)return res.status(200).json({received:true,ignored:'order_not_found'});
+    const existing=await fsGet(token,`commerceWebhookEvents/${stableId('rp_evt',eventId)}`);
+    if(existing)return res.status(200).json({received:true,duplicate:true});
+    await finalizeVerifiedRazorpayPayment(token,String(order.name).split('/').pop()!,paymentId,undefined,eventId,eventType);
+  } else if(eventType==='payment.failed' || eventType==='order.paid' || eventType.startsWith('refund.')){
+    // Record/acknowledge provider events without inventing a paid state.
+    const eventDocId=stableId('rp_evt',eventId);
+    const existing=await fsGet(token,`commerceWebhookEvents/${eventDocId}`);
+    if(!existing) await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({event:eventType,providerEventId:eventId,status:'received',createdAt:nowIso()})}}]);
+  }
+  return res.status(200).json({received:true});
+}
 
 function fsFilter(fieldPath:string, op:string, v:any){
   return {field:{fieldPath},op,value:v};
@@ -309,6 +418,22 @@ async function setProductVisibility(token:string,uid:string,b:any){
   return {product:{id:productId,...product.fields,visibility,updatedAt:stamp}};
 }
 
+
+export const config = { api: { bodyParser: false } };
+
+async function readRawBody(req:any):Promise<string>{
+  if(typeof req.rawBody==='string') return req.rawBody;
+  if(Buffer.isBuffer(req.rawBody)) return req.rawBody.toString('utf8');
+  if(typeof req.body==='string') return req.body;
+  const chunks:Buffer[]=[];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(String(chunk)));
+  return Buffer.concat(chunks).toString('utf8');
+}
+async function readJsonBody(req:any):Promise<any>{
+  const raw=await readRawBody(req); if(!raw)return {};
+  try{return JSON.parse(raw);}catch{throw new Error('Invalid JSON request body.');}
+}
+
 export default async function handler(req:VercelRequest,res:VercelResponse){
   const action=String(req.query.action||'').trim();
   if(req.method==='GET' && action==='marketplace'){
@@ -332,5 +457,6 @@ export default async function handler(req:VercelRequest,res:VercelResponse){
     catch(e:any){ return res.status(500).json({error:e?.message||'Unable to load public products.'}); }
   }
   if(req.method!=='POST')return res.status(405).json({error:'Method not allowed'});
-  try{const identity=await verifyFirebaseToken(authHeader(req)), uid=identity.uid, token=await serviceToken(); const body:any=req.body||{}; let out:any; if(action==='createProduct')out=await createProduct(token,uid,body); else if(action==='createPrice')out=await createPrice(token,uid,body); else if(action==='setProductStatus')out=await setProductStatus(token,uid,body); else if(action==='setProductVisibility')out=await setProductVisibility(token,uid,body); else if(action==='createCheckout')out=await createCheckout(token,uid,body); else if(action==='confirmTestPayment')out=await confirmTestPayment(token,uid,body); else if(action==='refundTestPayment')out=await refundTest(token,uid,body); else if(action==='checkAccess')out=await checkAccess(token,uid,body); else if(action==='diagnostics')out=await commerceDiagnostics(token,uid,identity.email,identity.emailVerified); else return res.status(400).json({error:'Unknown commerce action.'}); return res.status(200).json(out);}catch(e:any){const status=Number(e?.statusCode); return res.status(status>=400&&status<=599?status:400).json({error:e?.message||'Commerce request failed.'});}
+  if(action==='razorpayWebhook') return handleRazorpayWebhook(req,res);
+  try{const raw=await readRawBody(req); let body:any={}; try{body=raw?JSON.parse(raw):{};}catch{throw new Error('Invalid JSON request body.');} const identity=await verifyFirebaseToken(authHeader(req)), uid=identity.uid, token=await serviceToken(); let out:any; if(action==='createProduct')out=await createProduct(token,uid,body); else if(action==='createPrice')out=await createPrice(token,uid,body); else if(action==='setProductStatus')out=await setProductStatus(token,uid,body); else if(action==='setProductVisibility')out=await setProductVisibility(token,uid,body); else if(action==='createCheckout')out=await createCheckout(token,uid,body); else if(action==='confirmRazorpayPayment'||action==='verifyPayment')out=await confirmRazorpayPayment(token,uid,body); else if(action==='paymentStatus')out=await getRazorpayPaymentStatus(token,uid,body); else if(action==='checkAccess')out=await checkAccess(token,uid,body); else if(action==='diagnostics')out=await commerceDiagnostics(token,uid,identity.email,identity.emailVerified); else return res.status(400).json({error:'Unknown commerce action.'}); return res.status(200).json(out);}catch(e:any){const status=Number(e?.statusCode); return res.status(status>=400&&status<=599?status:400).json({error:e?.message||'Commerce request failed.'});}
 }

@@ -11,7 +11,7 @@ if (api.includes("return {update:{...write.update,name:firestoreResourceName(Str
 if (!api.includes('updateMask:{fieldPaths}')) failures.push('Commit updateMask support missing');
 if (!api.includes('currentDocument:{exists:false}')) failures.push('Create emulation precondition missing');
 if (api.includes('writes:normalized') === false) failures.push('Commit path missing');
-for (const fn of ['createProduct', 'createPrice', 'createCheckout', 'confirmTestPayment', 'refundTest']) {
+for (const fn of ['createProduct', 'createPrice', 'createCheckout', 'confirmRazorpayPayment', 'handleRazorpayWebhook']) {
   if (!api.includes(`async function ${fn}`)) failures.push(`missing ${fn}`);
 }
 if (commerce.includes("orderBy('createdAt','desc')")) failures.push('user order list still requires orderBy composite index');

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, Copy, ExternalLink, Heart, Image as ImageIcon, Share2, ShoppingBag, UserRound, X } from 'lucide-react';
 import type { CommunityUser, PageView } from '../types';
-import { getCommerceProduct, listCommercePrices, hasCommerceAccess, createCommerceCheckout, confirmTestPayment, type CommerceProduct, type CommercePublicPrice } from '../lib/commerce';
+import { getCommerceProduct, listCommercePrices, hasCommerceAccess, createCommerceCheckout, confirmRazorpayPayment, type CommerceProduct, type CommercePublicPrice } from '../lib/commerce';
 import { getProfileByUsername } from '../lib/community';
 import { auth, loginWithGoogle } from '../lib/firebase';
 import { notifyToast } from '../lib/toast';
@@ -117,6 +117,20 @@ export const CommerceProductView:React.FC<Props>=({productId,userProfile,onNavig
     try{ if(navigator.share) await navigator.share({title:product?.title||'OFFSCRPT product',url}); else {await navigator.clipboard.writeText(url);notifyToast('Product link copied.','success');} recordMarketplaceEvent('share' as any,productId,{source:'product-page'}); }catch{ /* cancelled share or unavailable clipboard */ }
   };
 
+  const loadRazorpay=async():Promise<any>=>{
+    if((window as any).Razorpay)return (window as any).Razorpay;
+    await new Promise<void>((resolve,reject)=>{
+      const existing=document.querySelector('script[data-razorpay-checkout]') as HTMLScriptElement|null;
+      if(existing){existing.addEventListener('load',()=>resolve(),{once:true});existing.addEventListener('error',()=>reject(new Error('Razorpay Checkout could not be loaded.')),{once:true});return;}
+      const script=document.createElement('script');
+      script.src='https://checkout.razorpay.com/v1/checkout.js';
+      script.async=true; script.dataset.razorpayCheckout='true';
+      script.onload=()=>resolve(); script.onerror=()=>reject(new Error('Razorpay Checkout could not be loaded.'));
+      document.head.appendChild(script);
+    });
+    return (window as any).Razorpay;
+  };
+
   const purchase=async()=>{
     if(!product||!primaryPrice)return notifyToast('This product is not currently purchasable.','error');
     if(!auth.currentUser){
@@ -125,11 +139,39 @@ export const CommerceProductView:React.FC<Props>=({productId,userProfile,onNavig
     setBusy(true);
     try{
       const checkout=await createCommerceCheckout(product.id,primaryPrice.id,crypto.randomUUID());
-      const done=await confirmTestPayment(checkout.order.id,checkout.payment.id,crypto.randomUUID());
-      setOwned(Boolean(done.entitlement));
-      notifyToast('Test purchase completed. Access has been granted.','success');
-    }catch(e:any){notifyToast(e?.message||'Purchase failed.','error');}
-    finally{setBusy(false);}
+      const Razorpay=(await loadRazorpay());
+      if(!Razorpay)throw new Error('Razorpay Checkout is unavailable.');
+      const options={
+        key: checkout.checkout.keyId,
+        amount: checkout.checkout.amount,
+        currency: checkout.checkout.currency,
+        name: checkout.checkout.name,
+        description: checkout.checkout.description,
+        order_id: checkout.checkout.razorpayOrderId,
+        prefill: checkout.checkout.prefill,
+        config:{display:{language:'en'}},
+        handler: async(response:any)=>{
+          try{
+            notifyToast('Payment received. Verifying your purchase…','success');
+            const done=await confirmRazorpayPayment({
+              orderId:checkout.order.id,
+              razorpayPaymentId:String(response?.razorpay_payment_id||''),
+              razorpayOrderId:String(response?.razorpay_order_id||''),
+              razorpaySignature:String(response?.razorpay_signature||'')
+            });
+            setOwned(done.order.status==='paid' && Boolean(done.entitlement));
+            if(done.order.status==='paid') notifyToast('Payment verified. Purchase access has been granted.','success');
+            else notifyToast('Payment is still being confirmed.','success');
+          }catch(e:any){
+            notifyToast(e?.message||'Payment verification failed. Your access will not be granted until payment is verified.','error');
+          }finally{setBusy(false);}
+        },
+        modal:{ondismiss:()=>setBusy(false),handleback:true,escape:true,backdropclose:false}
+      };
+      const rzp=new Razorpay(options);
+      rzp.on('payment.failed',()=>{setBusy(false);notifyToast('Payment failed. No access was granted. You can try again.','error');});
+      rzp.open();
+    }catch(e:any){setBusy(false);notifyToast(e?.message||'Could not start Razorpay Checkout.','error');}
   };
 
   if(loading)return <div className="max-w-5xl mx-auto px-4 py-24 text-center font-mono text-xs uppercase">LOADING PRODUCT…</div>;

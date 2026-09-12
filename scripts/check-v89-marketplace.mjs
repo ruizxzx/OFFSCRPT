@@ -9,8 +9,8 @@ const pass = (msg) => console.log(`PASS: ${msg}`);
 let failures = 0;
 
 const pkg = JSON.parse(read('package.json'));
-if (pkg.version !== '0.89.1') fail(`package.json version is ${pkg.version}, expected 0.89.1`); else pass('package version 0.89.1');
-if (read('VERSION.md').trim() !== 'V89.0.1') fail('VERSION.md is not V89.0.1'); else pass('VERSION.md V89.0.1');
+if (pkg.version !== '0.90.0') fail(`package.json version is ${pkg.version}, expected 0.90.0`); else pass('package version 0.90.0');
+if (read('VERSION.md').trim() !== 'V90.0.0') fail('VERSION.md is not V90.0.0'); else pass('VERSION.md V90.0.0');
 
 for (const rel of [
   'src/components/MarketplaceView.tsx',

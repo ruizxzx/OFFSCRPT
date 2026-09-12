@@ -79,14 +79,21 @@ export async function setCommerceProductVisibility(productId:string,visibility:'
   return callApi('setProductVisibility',{productId,visibility});
 }
 
-export async function createCommerceCheckout(productId:string, priceId:string, idempotencyKey?:string): Promise<{order:CommerceOrder;payment:{id:string;status:string;testMode:boolean};entitlement?:CommerceEntitlement}> {
+export interface RazorpayCheckoutData {
+  keyId: string;
+  razorpayOrderId: string;
+  orderId: string;
+  amount: number;
+  currency: string;
+  name: string;
+  description: string;
+  prefill?: {email?:string;name?:string;contact?:string};
+}
+export async function createCommerceCheckout(productId:string, priceId:string, idempotencyKey?:string): Promise<{order:CommerceOrder;payment:{id:string;status:string;testMode:boolean;provider?:string};checkout:RazorpayCheckoutData;entitlement?:CommerceEntitlement}> {
   return callApi('createCheckout', {productId,priceId,idempotencyKey:idempotencyKey || crypto.randomUUID()});
 }
-export async function confirmTestPayment(orderId:string, paymentId:string, idempotencyKey?:string): Promise<{order:CommerceOrder;payment:{id:string;status:string;testMode:boolean};entitlement:CommerceEntitlement}> {
-  return callApi('confirmTestPayment', {orderId,paymentId,idempotencyKey:idempotencyKey || crypto.randomUUID()});
-}
-export async function requestCommerceRefund(orderId:string, reason?:string): Promise<{refundId:string;status:string;orderStatus:string;entitlementStatus?:string}> {
-  return callApi('refundTestPayment', {orderId,reason:reason || 'Customer requested refund',idempotencyKey:crypto.randomUUID()});
+export async function confirmRazorpayPayment(input:{orderId:string;razorpayPaymentId:string;razorpayOrderId:string;razorpaySignature:string}): Promise<{order:CommerceOrder;payment:{id:string;status:string;testMode:boolean;provider?:string};entitlement?:CommerceEntitlement}> {
+  return callApi('confirmRazorpayPayment', input);
 }
 export async function checkCommerceAccess(userId:string, resourceType:string, resourceId:string):Promise<boolean> {
   if (!userId || auth.currentUser?.uid !== userId) return false;
