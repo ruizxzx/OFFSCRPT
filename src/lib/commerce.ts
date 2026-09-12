@@ -209,6 +209,27 @@ export async function listCommercePrices(productId:string): Promise<CommercePubl
   return Array.isArray(result.prices)?result.prices:[];
 }
 
+
+export type CommissionRuleScope = 'global'|'creator'|'product';
+export interface CommissionRule {
+  id:string; ruleId:string; ruleVersion:number; scope:CommissionRuleScope; productId?:string; creatorId?:string;
+  percentage:number; percentageBps:number; fixedAmount:number; minimumAmount?:number; maximumAmount?:number; currency:string;
+  effectiveFrom:string; effectiveUntil?:string; active:boolean; priority:number; refundPolicy:{proportional:boolean}; createdAt:string; updatedAt:string;
+}
+export interface CommissionSimulation { generatedAt:string; rule:CommissionRule; result:{grossAmount:number;grossAmountSubunits:number;platformCommissionAmount:number;platformCommissionAmountSubunits:number;creatorNetAmount:number;creatorNetAmountSubunits:number;currency:string}; }
+export interface CreatorEarningsSummary { creatorId:string; currency:string; grossSales:number; platformCommission:number; netEarnings:number; refundedGross:number; reversedCommission:number; reversedCreatorAmount:number; generatedAt:string; }
+export interface FinancialAllocation { id:string; allocationId:string; entryType:string; orderId:string; paymentId:string; creatorId:string; sellerId:string; razorpayAccountId?:string|null; productId:string; priceId:string; grossAmount:number; grossAmountSubunits?:number; platformCommissionAmount:number|null; platformCommissionAmountSubunits?:number|null; creatorNetAmount:number|null; creatorNetAmountSubunits?:number|null; currency:string; financialStatus:string; commissionRuleId?:string|null; commissionRuleVersion?:number|null; transferStatus:string; }
+export interface OrderFinancials { order:CommerceOrder; allocation?:FinancialAllocation; refunds:Array<Record<string,any>>; }
+export async function listCommissionRules():Promise<{rules:CommissionRule[]}> { return callApi('listCommissionRules'); }
+export async function createCommissionRule(input:Record<string,unknown>):Promise<{rule:CommissionRule}> { return callApi('createCommissionRule',input); }
+export async function updateCommissionRule(input:Record<string,unknown>):Promise<{rule:CommissionRule}> { return callApi('updateCommissionRule',input); }
+export async function setCommissionRuleStatus(ruleId:string,active:boolean):Promise<{rule:CommissionRule}> { return callApi('setCommissionRuleStatus',{ruleId,active}); }
+export async function simulateCommission(input:Record<string,unknown>):Promise<CommissionSimulation> { return callApi('simulateCommission',input); }
+export async function getCreatorEarnings():Promise<CreatorEarningsSummary> { return callApi('getCreatorEarnings'); }
+export async function getOrderFinancials(orderId:string):Promise<OrderFinancials> { return callApi('getOrderFinancials',{orderId}); }
+export async function adminFinancialSummary():Promise<{currency:string;grossSales:number;platformCommission:number;creatorNet:number;refundedAmount:number;financialErrors:number;generatedAt:string}> { return callApi('adminFinancialSummary'); }
+export async function reconcileCommission(orderId:string):Promise<{allocation:FinancialAllocation}> { return callApi('reconcileCommission',{orderId}); }
+
 export interface AdminSellerRow extends CreatorSellerProfile { id:string; }
 export async function adminListCreatorSellers(): Promise<{sellers:AdminSellerRow[]}> { return callApi('adminListSellers'); }
 export async function adminSetCreatorSellerStatus(creatorId:string,status:'active'|'suspended'|'created'): Promise<{seller:CreatorSellerProfile}> { return callApi('adminSetSellerStatus',{creatorId,status}); }

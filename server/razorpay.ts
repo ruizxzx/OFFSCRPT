@@ -51,6 +51,7 @@ export const razorpayProvider:PaymentProvider & {
   amountSubunit(amount:number,currency:string):number;
   config():RazorpayConfig;
   request(path:string,init?:RequestInit):Promise<any>;
+  fetchRefund(refundId:string):Promise<any>;
 } = {
   config:getRazorpayConfig,
   amountSubunit,
@@ -65,6 +66,7 @@ export const razorpayProvider:PaymentProvider & {
   },
   async fetchPayment(paymentId){return request(`/payments/${encodeURIComponent(paymentId)}`);},
   async fetchOrder(orderId){return request(`/orders/${encodeURIComponent(orderId)}`);},
+  async fetchRefund(refundId){return request(`/refunds/${encodeURIComponent(refundId)}`);},
   verifyPaymentSignature(orderId,paymentId,signature){
     const {keySecret}=getRazorpayConfig(); if(!orderId||!paymentId||!signature)return false;
     const expected=crypto.createHmac('sha256',keySecret).update(`${orderId}|${paymentId}`).digest('hex');

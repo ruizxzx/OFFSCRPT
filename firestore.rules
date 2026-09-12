@@ -1579,6 +1579,18 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // V93 Commission + Profit-Cut Engine. All rule and financial mutations are
+    // server-authoritative; creators may read only their own allocation records.
+    match /commerceCommissionRules/{ruleId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /commerceFinancialAllocations/{allocationId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.creatorId == request.auth.uid);
+      allow write: if false;
+    }
+
     // V88 Digital Product Engine metadata. All mutations and protected
     // reads are server-authoritative through /api/digital-products.
     match /digitalProductVersions/{versionId} {

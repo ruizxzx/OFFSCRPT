@@ -171,6 +171,72 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "commerceFinancialAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "creatorId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "commerceFinancialAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "entryType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "commerceFinancialAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "originalAllocationId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "commerceRefunds",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paymentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "commerceCommissionRules",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ruleId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ruleVersion",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '../../server/vercel-types.js
 import crypto from 'node:crypto';
 import { getRazorpayConfig, isRazorpayConfigured, razorpayProvider, verifyCapturedPayment } from '../../server/razorpay.js';
 import { createLinkedAccount, fetchLinkedAccount, updateLinkedAccount, providerHealth, type RouteBusinessType } from '../../server/razorpay-route.js';
+import { calculateCommission, calculateProportionalReversal, majorFromSubunits, subunitsFromMajor, validateCommissionRuleInput, type CommissionRule, type CommissionRuleInput, type CommissionRuleScope } from '../../server/commission.js';
 
 const projectId = () => process.env.GOOGLE_CLOUD_PROJECT || process.env.VITE_FIREBASE_PROJECT_ID || 'krishficient-portfolio';
 const apiKey = () => process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
@@ -34,7 +35,7 @@ function firestoreResourceName(name:string){
   if(name.startsWith('projects/')) return name;
   if(name.startsWith(base)) return `projects/${projectId()}/databases/(default)/documents/${name.slice(base.length)}`;
   if(!name.includes('/')) return `projects/${projectId()}/databases/(default)/documents/${name}`;
-  if(/^(commerceProducts|commercePrices|commerceOrders|commercePayments|commerceRefunds|entitlements|creatorRevenue|creatorPayouts|commerceAuditLogs|commerceWebhookEvents|commerceIdempotency|creatorCommerceProfiles|users)\//.test(name)) return `projects/${projectId()}/databases/(default)/documents/${name}`;
+  if(/^(commerceProducts|commercePrices|commerceOrders|commercePayments|commerceRefunds|entitlements|creatorRevenue|creatorPayouts|commerceAuditLogs|commerceWebhookEvents|commerceIdempotency|creatorCommerceProfiles|commerceCommissionRules|commerceFinancialAllocations|users)\//.test(name)) return `projects/${projectId()}/databases/(default)/documents/${name}`;
   throw new Error(`Invalid Firestore document path: ${name}`);
 }
 function normalizeCommitWrites(writes:any[]){
@@ -305,6 +306,237 @@ async function adminSetSellerStatus(token:string,uid:string,b:any,email?:string,
   return getSeller(token,creatorId);
 }
 
+function commissionRuleIdForDocument(name:string){ return String(name).split('/').pop() || ''; }
+
+function normalizeRuleDocument(row:any):CommissionRule {
+  const f=row?.fields||{};
+  return {
+    id:commissionRuleIdForDocument(row?.name||f.id||''),
+    ruleId:String(f.ruleId||''),
+    ruleVersion:Number(f.ruleVersion||1),
+    scope:String(f.scope||'global') as CommissionRuleScope,
+    productId:f.productId?String(f.productId):undefined,
+    creatorId:f.creatorId?String(f.creatorId):undefined,
+    percentage:Number(f.percentage||0),
+    percentageBps:Number(f.percentageBps||0),
+    fixedAmount:Number(f.fixedAmount||0),
+    minimumAmount:f.minimumAmount===undefined?undefined:Number(f.minimumAmount),
+    maximumAmount:f.maximumAmount===undefined?undefined:Number(f.maximumAmount),
+    currency:String(f.currency||'INR').toUpperCase(),
+    effectiveFrom:String(f.effectiveFrom||f.createdAt||''),
+    effectiveUntil:f.effectiveUntil?String(f.effectiveUntil):undefined,
+    active:Boolean(f.active),
+    priority:Number(f.priority||0),
+    refundPolicy:{proportional:f.refundPolicy?.proportional!==false},
+    createdAt:String(f.createdAt||''),
+    updatedAt:String(f.updatedAt||f.createdAt||'')
+  };
+}
+
+async function listAllCommissionRules(token:string){
+  const rows=await fsRunQueryAdvanced(token,'commerceCommissionRules',[],{orderBy:[{fieldPath:'updatedAt',direction:'DESCENDING'}],limit:300});
+  return rows.map(normalizeRuleDocument);
+}
+
+function ruleApplies(rule:CommissionRule, productId:string, creatorId:string, atMs:number){
+  if(!rule.active) return false;
+  if(rule.currency!=='INR') return false;
+  const from=Date.parse(rule.effectiveFrom); if(Number.isFinite(from) && atMs<from) return false;
+  if(rule.effectiveUntil){const until=Date.parse(rule.effectiveUntil); if(Number.isFinite(until) && atMs>=until) return false;}
+  if(rule.scope==='product') return rule.productId===productId;
+  if(rule.scope==='creator') return rule.creatorId===creatorId;
+  return rule.scope==='global';
+}
+
+async function resolveCommissionRule(token:string,productId:string,creatorId:string,atIso:string){
+  const atMs=Date.parse(atIso); const rules=await listAllCommissionRules(token); const matches=rules.filter(r=>ruleApplies(r,productId,creatorId,atMs));
+  matches.sort((a,b)=>{
+    const rank=(r:CommissionRule)=>r.scope==='product'?3:r.scope==='creator'?2:1;
+    return rank(b)-rank(a) || b.priority-a.priority || b.ruleVersion-a.ruleVersion || Date.parse(b.effectiveFrom)-Date.parse(a.effectiveFrom) || b.ruleId.localeCompare(a.ruleId);
+  });
+  return matches[0]||null;
+}
+
+function ruleInputFromBody(b:any):CommissionRuleInput {
+  return {
+    scope:String(b.scope||'global') as CommissionRuleScope,
+    productId:b.productId?String(b.productId):undefined,
+    creatorId:b.creatorId?String(b.creatorId):undefined,
+    percentage:b.percentage===undefined||b.percentage===''?undefined:Number(b.percentage),
+    fixedAmount:b.fixedAmount===undefined||b.fixedAmount===''?undefined:Number(b.fixedAmount),
+    minimumAmount:b.minimumAmount===undefined||b.minimumAmount===''?undefined:Number(b.minimumAmount),
+    maximumAmount:b.maximumAmount===undefined||b.maximumAmount===''?undefined:Number(b.maximumAmount),
+    currency:String(b.currency||'INR').toUpperCase(),
+    effectiveFrom:b.effectiveFrom?String(b.effectiveFrom):undefined,
+    effectiveUntil:b.effectiveUntil?String(b.effectiveUntil):undefined,
+    priority:b.priority===undefined||b.priority===''?0:Number(b.priority),
+    active:b.active!==false,
+    refundPolicy:{proportional:b.refundPolicy?.proportional!==false}
+  };
+}
+
+async function createCommissionRule(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;}
+  const input=ruleInputFromBody(b); const normalized=validateCommissionRuleInput(input); const ruleId=`rule_${crypto.randomUUID()}`; const now=nowIso();
+  const rule={id:stableId('crule',`${ruleId}:1`),ruleId,ruleVersion:1,scope:input.scope,productId:input.productId,creatorId:input.creatorId,percentage:normalized.percentage,percentageBps:normalized.percentageBps,fixedAmount:normalized.fixedAmount,minimumAmount:normalized.minimumAmount,maximumAmount:normalized.maximumAmount,currency:normalized.currency,effectiveFrom:normalized.effectiveFrom,effectiveUntil:normalized.effectiveUntil,active:normalized.active,priority:normalized.priority,refundPolicy:normalized.refundPolicy,createdAt:now,updatedAt:now};
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceCommissionRules/${rule.id}`,fields:fields(rule)}}]);
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`commission_rule_created:${rule.id}`)}`,fields:fields({actorId:uid,actorType:'admin',targetType:'commission_rule',targetId:rule.ruleId,event:'commission_rule_created',timestamp:now,metadata:{ruleVersion:1,scope:rule.scope}})}}]);
+  return {rule};
+}
+
+async function updateCommissionRule(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;}
+  const ruleId=String(b.ruleId||'').trim(); if(!ruleId) throw new Error('ruleId is required.');
+  const all=await listAllCommissionRules(token); const versions=all.filter(r=>r.ruleId===ruleId); if(!versions.length) throw new Error('Commission rule not found.');
+  const current=versions.sort((a,b)=>b.ruleVersion-a.ruleVersion)[0]; const input=ruleInputFromBody(b); const normalized=validateCommissionRuleInput(input); const nextVersion=current.ruleVersion+1; const now=nowIso();
+  const next={id:stableId('crule',`${ruleId}:${nextVersion}`),ruleId,ruleVersion:nextVersion,scope:input.scope,productId:input.productId,creatorId:input.creatorId,percentage:normalized.percentage,percentageBps:normalized.percentageBps,fixedAmount:normalized.fixedAmount,minimumAmount:normalized.minimumAmount,maximumAmount:normalized.maximumAmount,currency:normalized.currency,effectiveFrom:normalized.effectiveFrom,effectiveUntil:normalized.effectiveUntil,active:normalized.active,priority:normalized.priority,refundPolicy:normalized.refundPolicy,createdAt:now,updatedAt:now};
+  const writes:any[]=[{create:{name:`${firestoreBase()}/commerceCommissionRules/${next.id}`,fields:fields(next)}}];
+  const nextFrom=Date.parse(next.effectiveFrom);
+  for(const r of versions.filter(r=>r.active)){
+    const oldFrom=Date.parse(r.effectiveFrom);
+    if(Number.isFinite(nextFrom) && Number.isFinite(oldFrom) && nextFrom>oldFrom && nextFrom>Date.now()){
+      writes.push({update:{name:`${firestoreBase()}/commerceCommissionRules/${r.id}`,fields:fields({effectiveUntil:next.effectiveFrom,active:true,updatedAt:now})}});
+    } else {
+      writes.push({update:{name:`${firestoreBase()}/commerceCommissionRules/${r.id}`,fields:fields({active:false,updatedAt:now})}});
+    }
+  }
+  await fsCommit(token,writes);
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`commission_rule_updated:${ruleId}:${nextVersion}`)}`,fields:fields({actorId:uid,actorType:'admin',targetType:'commission_rule',targetId:ruleId,event:'commission_rule_updated',timestamp:now,metadata:{fromVersion:current.ruleVersion,toVersion:nextVersion}})}}]);
+  return {rule:next};
+}
+
+async function setCommissionRuleStatus(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;}
+  const ruleId=String(b.ruleId||'').trim(); const active=Boolean(b.active); if(!ruleId) throw new Error('ruleId is required.');
+  const all=await listAllCommissionRules(token); const versions=all.filter(r=>r.ruleId===ruleId); if(!versions.length) throw new Error('Commission rule not found.'); const current=versions.sort((a,b)=>b.ruleVersion-a.ruleVersion)[0];
+  const now=nowIso();
+  if(active){ for(const r of versions.filter(r=>r.active && r.id!==current.id)){ await fsPatch(token,`commerceCommissionRules/${r.id}`,{active:false,updatedAt:now}); } }
+  await fsPatch(token,`commerceCommissionRules/${current.id}`,{active,updatedAt:now});
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`commission_rule_status:${ruleId}:${active}:${now}`)}`,fields:fields({actorId:uid,actorType:'admin',targetType:'commission_rule',targetId:ruleId,event:active?'commission_rule_activated':'commission_rule_deactivated',timestamp:now,metadata:{ruleVersion:current.ruleVersion}})}}]);
+  return {rule:{...current,active,updatedAt:now}};
+}
+
+async function simulateCommission(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;}
+  const grossAmount=Number(b.grossAmount); if(!Number.isSafeInteger(grossAmount)||grossAmount<0) throw new Error('Gross amount must be a valid whole INR amount.');
+  const atIso=b.at?String(b.at):nowIso(); let rule:CommissionRule|null=null;
+  if(b.ruleId){ const all=await listAllCommissionRules(token); rule=all.filter(r=>r.ruleId===String(b.ruleId)).sort((a,b)=>b.ruleVersion-a.ruleVersion)[0]||null; if(!rule) throw new Error('Commission rule not found.'); }
+  else { const input=ruleInputFromBody(b); const normalized=validateCommissionRuleInput(input); rule={id:'simulation',ruleId:'simulation',ruleVersion:1,scope:input.scope,productId:input.productId,creatorId:input.creatorId,percentage:normalized.percentage,percentageBps:normalized.percentageBps,fixedAmount:normalized.fixedAmount,minimumAmount:normalized.minimumAmount,maximumAmount:normalized.maximumAmount,currency:normalized.currency,effectiveFrom:normalized.effectiveFrom,effectiveUntil:normalized.effectiveUntil,active:true,priority:normalized.priority,refundPolicy:normalized.refundPolicy,createdAt:atIso,updatedAt:atIso}; }
+  const result=calculateCommission(grossAmount,'INR',rule); return {generatedAt:nowIso(),rule,result};
+}
+
+async function getOrderFinancials(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  const orderId=String(b.orderId||'').trim(); if(!orderId) throw new Error('orderId is required.'); const order=await fsGet(token,`commerceOrders/${orderId}`); if(!order) throw new Error('Order not found.');
+  const allowed=order.fields.customerId===uid || order.fields.creatorId===uid || await verifyCommerceAdmin(token,uid,email,emailVerified); if(!allowed){const e:any=new Error('Access denied.'); e.statusCode=403; throw e;}
+  const allocation=await fsGet(token,`commerceFinancialAllocations/${stableId('fin',orderId)}`);
+  const refunds=await fsRunQuery(token,'commerceRefunds',[{field:{fieldPath:'orderId'},op:'EQUAL',value:{stringValue:orderId}}]);
+  return {order:{id:orderId,...order.fields},allocation:allocation?{id:stableId('fin',orderId),...allocation.fields}:undefined,refunds:refunds.map(r=>({id:String(r.name).split('/').pop(),...r.fields}))};
+}
+
+async function ensureFinancialAllocation(token:string,orderId:string, paymentId:string, options:{allowRecalculate?:boolean}={}){
+  const order=await fsGet(token,`commerceOrders/${orderId}`); if(!order) throw new Error('Order not found.'); const existing=await fsGet(token,`commerceFinancialAllocations/${stableId('fin',orderId)}`);
+  if(existing){
+    const state=String(existing.fields.financialStatus||'');
+    if(['calculated','adjusted','reversed','partially_reversed'].includes(state)) return {id:stableId('fin',orderId),...existing.fields};
+    if(!options.allowRecalculate && !['pending','error','reconciliation_required'].includes(state)) return {id:stableId('fin',orderId),...existing.fields};
+  }
+  const item=Array.isArray(order.fields.items)?order.fields.items[0]:null; const productId=String(item?.productId||''); const priceId=String(item?.priceId||''); const creatorId=String(order.fields.creatorId||''); const gross=Number(order.fields.total||0); const currency=String(order.fields.currency||'INR').toUpperCase(); const atIso=String(order.fields.paidAt||nowIso()); const baseId=stableId('fin',orderId);
+  if(!productId||!creatorId||!Number.isSafeInteger(gross)||gross<0||currency!=='INR'){
+    const bad={allocationId:baseId,entryType:'sale',orderId,paymentId,creatorId,sellerId:'',razorpayAccountId:null,productId,priceId,grossAmount:gross,grossAmountSubunits:currency==='INR'&&Number.isSafeInteger(gross)?subunitsFromMajor(gross,currency):null,platformCommissionAmount:null,platformCommissionAmountSubunits:null,creatorNetAmount:null,creatorNetAmountSubunits:null,currency,commissionRuleId:null,commissionRuleVersion:null,financialStatus:'reconciliation_required',transferStatus:'not_started',lastError:'Missing or invalid canonical order financial inputs.',createdAt:existing?.fields.createdAt||nowIso(),updatedAt:nowIso()};
+    if(existing) await fsPatch(token,`commerceFinancialAllocations/${baseId}`,bad); else {try{await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceFinancialAllocations/${baseId}`,fields:fields(bad)}}]);}catch{const again=await fsGet(token,`commerceFinancialAllocations/${baseId}`); if(again)return {id:baseId,...again.fields}; throw new Error(bad.lastError);}}
+    return {id:baseId,...bad};
+  }
+  const seller=await getSellerProfile(token,creatorId); const sellerId=String(seller?.fields?.sellerId||sellerIdFor(creatorId)); const accountId=String(seller?.fields?.razorpayAccountId||'');
+  const rule=await resolveCommissionRule(token,productId,creatorId,atIso);
+  if(!seller||!accountId||!rule){
+    const reason=!seller?'Seller profile missing.':!accountId?'Razorpay seller account mapping missing.':'No applicable commission rule is configured for this transaction.';
+    const pending={allocationId:baseId,entryType:'sale',orderId,paymentId,creatorId,sellerId,razorpayAccountId:accountId||null,productId,priceId,grossAmount:gross,grossAmountSubunits:subunitsFromMajor(gross,currency),platformCommissionAmount:null,platformCommissionAmountSubunits:null,creatorNetAmount:null,creatorNetAmountSubunits:null,currency,commissionRuleId:null,commissionRuleVersion:null,financialStatus:'reconciliation_required',transferStatus:'not_started',lastError:reason,createdAt:existing?.fields.createdAt||nowIso(),updatedAt:nowIso()};
+    if(existing) await fsPatch(token,`commerceFinancialAllocations/${baseId}`,pending); else {try{await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceFinancialAllocations/${baseId}`,fields:fields(pending)}}]);}catch{const again=await fsGet(token,`commerceFinancialAllocations/${baseId}`); if(again)return {id:baseId,...again.fields};}}
+    await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`commission_reconciliation:${orderId}`)}`,fields:fields({actorId:creatorId,actorType:'system',targetType:'financial_allocation',targetId:baseId,event:'commission_reconciliation_required',timestamp:nowIso(),metadata:{reason}})}}]).catch(()=>{});
+    return {id:baseId,...pending};
+  }
+  const calc=calculateCommission(gross,currency,rule); const now=nowIso();
+  const allocation={allocationId:baseId,entryType:'sale',orderId,paymentId,creatorId,sellerId,razorpayAccountId:accountId,productId,priceId,grossAmount:gross,grossAmountSubunits:calc.grossAmountSubunits,platformCommissionAmount:calc.platformCommissionAmount,platformCommissionAmountSubunits:calc.platformCommissionAmountSubunits,creatorNetAmount:calc.creatorNetAmount,creatorNetAmountSubunits:calc.creatorNetAmountSubunits,currency,commissionRuleId:rule.ruleId,commissionRuleVersion:rule.ruleVersion,commissionSnapshot:{ruleId:rule.ruleId,ruleVersion:rule.ruleVersion,ruleType:rule.percentageBps>0&&rule.fixedAmount>0?'percentage_plus_fixed':rule.fixedAmount>0?'fixed':'percentage',percentage:rule.percentage,percentageBps:rule.percentageBps,fixedAmount:rule.fixedAmount,effectiveFrom:rule.effectiveFrom,grossAmountSubunits:calc.grossAmountSubunits,commissionAmountSubunits:calc.platformCommissionAmountSubunits,creatorNetAmountSubunits:calc.creatorNetAmountSubunits,currency,calculatedAt:now},financialStatus:'calculated',transferStatus:'not_started',createdAt:existing?.fields.createdAt||now,updatedAt:now};
+  if(existing) await fsPatch(token,`commerceFinancialAllocations/${baseId}`,allocation); else {try{await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceFinancialAllocations/${baseId}`,fields:fields(allocation)}}]);}catch{const again=await fsGet(token,`commerceFinancialAllocations/${baseId}`); if(again)return {id:baseId,...again.fields};}}
+  const ledgerId=stableId('rev',orderId);
+  const ledger={platformFee:calc.platformCommissionAmount,netCreatorAmount:calc.creatorNetAmount,commissionStatus:'calculated',commissionRuleId:rule.ruleId,commissionRuleVersion:rule.ruleVersion,grossAmountSubunits:calc.grossAmountSubunits,platformCommissionAmountSubunits:calc.platformCommissionAmountSubunits,netCreatorAmountSubunits:calc.creatorNetAmountSubunits,financialAllocationId:baseId,razorpayAccountId:accountId,updatedAt:now};
+  try {
+    await fsPatch(token,`creatorRevenue/${ledgerId}`,ledger);
+  } catch {
+    await fsCommit(token,[{create:{name:`${firestoreBase()}/creatorRevenue/${ledgerId}`,fields:fields({creatorId,orderId,transactionId:paymentId,gross,discounts:Number(order.fields.discount||0),tax:Number(order.fields.tax||0),paymentFees:0,platformFee:calc.platformCommissionAmount,refundAmount:0,netCreatorAmount:calc.creatorNetAmount,type:'sale',status:'posted',currency,financialAllocationId:baseId,commissionStatus:'calculated',commissionRuleId:rule.ruleId,commissionRuleVersion:rule.ruleVersion,grossAmountSubunits:calc.grossAmountSubunits,platformCommissionAmountSubunits:calc.platformCommissionAmountSubunits,netCreatorAmountSubunits:calc.creatorNetAmountSubunits,razorpayAccountId:accountId,createdAt:now,updatedAt:now})}}]).catch(()=>{});
+  }
+  return {id:baseId,...allocation};
+}
+
+async function safeEnsureFinancialAllocation(token:string,orderId:string,paymentId:string){
+  try { return await ensureFinancialAllocation(token,orderId,paymentId); }
+  catch(error:any) {
+    const allocationId=stableId('fin',orderId); const now=nowIso(); const fallback={allocationId,entryType:'sale',orderId,paymentId,financialStatus:'reconciliation_required',transferStatus:'not_started',lastError:String(error?.message||'Financial allocation failed.').slice(0,500),createdAt:now,updatedAt:now};
+    const existing=await fsGet(token,`commerceFinancialAllocations/${allocationId}`).catch(()=>null);
+    if(existing) await fsPatch(token,`commerceFinancialAllocations/${allocationId}`,fallback).catch(()=>{}); else await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceFinancialAllocations/${allocationId}`,fields:fields(fallback)}}]).catch(()=>{});
+    await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`commission_error:${orderId}:${now}`)}`,fields:fields({actorId:'system',actorType:'system',targetType:'financial_allocation',targetId:allocationId,event:'commission_error',timestamp:now,metadata:{message:fallback.lastError}})}}]).catch(()=>{});
+    return fallback;
+  }
+}
+
+async function processRefundWebhook(token:string,eventType:string,refundEntity:any,eventId:string){
+  const refundId=String(refundEntity?.id||''); const providerPaymentId=String(refundEntity?.payment_id||''); const providerStatus=String(refundEntity?.status||'pending').toLowerCase(); const amountSubunits=Number(refundEntity?.amount||0); if(!refundId||!providerPaymentId||!Number.isSafeInteger(amountSubunits)||amountSubunits<=0) return {ignored:'invalid_refund_payload'};
+  const payments=await fsRunQuery(token,'commercePayments',[{field:{fieldPath:'razorpayPaymentId'},op:'EQUAL',value:{stringValue:providerPaymentId}}]); const payment=payments[0]; if(!payment) return {ignored:'payment_not_found'}; const orderId=String(payment.fields.orderId||''); const order=orderId?await fsGet(token,`commerceOrders/${orderId}`):null; if(!order) return {ignored:'order_not_found'};
+  const providerRefund=eventType==='refund.processed'?await razorpayProvider.fetchRefund(refundId):refundEntity;
+  if(String(providerRefund?.payment_id||providerPaymentId)!==providerPaymentId) throw new Error('Razorpay refund/payment linkage is invalid.');
+  const canonicalCurrency=String(order.fields.currency||'INR').toUpperCase(); const canonicalGrossSubunits=subunitsFromMajor(Number(order.fields.total||0),canonicalCurrency);
+  const providerAmount=Number(providerRefund?.amount??amountSubunits); if(!Number.isSafeInteger(providerAmount)||providerAmount<=0||providerAmount>canonicalGrossSubunits) throw new Error('Razorpay refund amount exceeds canonical order amount.');
+  if(providerRefund?.currency && String(providerRefund.currency).trim() && String(providerRefund.currency).toUpperCase()!==canonicalCurrency) throw new Error('Razorpay refund currency mismatch.');
+  const existing=await fsGet(token,`commerceRefunds/${stableId('refund',refundId)}`); const now=nowIso();
+  const refundDoc={refundId,orderId,paymentId:String(payment.name).split('/').pop()!,provider:'razorpay',razorpayPaymentId:providerPaymentId,razorpayRefundId:refundId,amount:majorFromSubunits(providerAmount),amountSubunits:providerAmount,currency:canonicalCurrency,status:providerStatus,eventType,lastProviderEventId:eventId,createdAt:existing?.fields?.createdAt||now,updatedAt:now};
+  if(existing) await fsPatch(token,`commerceRefunds/${stableId('refund',refundId)}`,refundDoc); else {try{await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceRefunds/${stableId('refund',refundId)}`,fields:fields(refundDoc)}}]);}catch{}}
+  if(providerStatus!=='processed' || (eventType!=='refund.processed' && providerStatus!=='processed')) return {refund:refundDoc};
+  const allocation=await safeEnsureFinancialAllocation(token,orderId,String(payment.name).split('/').pop()!);
+  if(allocation.financialStatus!=='calculated') { await fsPatch(token,`commerceRefunds/${stableId('refund',refundId)}`,{financialStatus:'reconciliation_required',updatedAt:now}); return {refund:refundDoc,financialStatus:'reconciliation_required'}; }
+  const reversals=await fsRunQuery(token,'commerceFinancialAllocations',[{field:{fieldPath:'originalAllocationId'},op:'EQUAL',value:{stringValue:allocation.allocationId}}]);
+  const existingRefunded=(await fsRunQuery(token,'commerceRefunds',[{field:{fieldPath:'paymentId'},op:'EQUAL',value:{stringValue:String(payment.name).split('/').pop()!}}])).filter(r=>String(r.fields.status||'').toLowerCase()==='processed').reduce((n,r)=>n+Number(r.fields.amountSubunits||0),0);
+  if(existingRefunded>canonicalGrossSubunits) throw new Error('Cumulative refunds exceed the canonical order amount.');
+  const previousCommissionReversed=reversals.reduce((n,r)=>n+Math.abs(Number(r.fields.platformCommissionAmountSubunits||0)),0);
+  const previousCreatorReversed=reversals.reduce((n,r)=>n+Math.abs(Number(r.fields.creatorNetAmountSubunits||0)),0);
+  const cumulativeIsFull=existingRefunded===canonicalGrossSubunits;
+  let reversal=calculateProportionalReversal(providerAmount,Number(allocation.grossAmountSubunits),Number(allocation.platformCommissionAmountSubunits));
+  if(cumulativeIsFull){ reversal={commissionReversalSubunits:Math.max(0,Number(allocation.platformCommissionAmountSubunits)-previousCommissionReversed),creatorReversalSubunits:Math.max(0,Number(allocation.creatorNetAmountSubunits)-previousCreatorReversed)}; }
+  const reversalId=stableId('finrev',refundId); const reversalExisting=await fsGet(token,`commerceFinancialAllocations/${reversalId}`);
+  if(!reversalExisting){ const reversalEntry={allocationId:reversalId,entryType:'refund_reversal',originalAllocationId:allocation.allocationId,refundId,orderId,paymentId:String(payment.name).split('/').pop()!,creatorId:String(allocation.creatorId||''),sellerId:String(allocation.sellerId||''),razorpayAccountId:allocation.razorpayAccountId||null,productId:String(allocation.productId||''),priceId:String(allocation.priceId||''),grossAmount:-majorFromSubunits(providerAmount),grossAmountSubunits:-providerAmount,platformCommissionAmount:-majorFromSubunits(reversal.commissionReversalSubunits),platformCommissionAmountSubunits:-reversal.commissionReversalSubunits,creatorNetAmount:-majorFromSubunits(reversal.creatorReversalSubunits),creatorNetAmountSubunits:-reversal.creatorReversalSubunits,currency:canonicalCurrency,financialStatus:cumulativeIsFull?'reversed':'partially_reversed',transferStatus:'not_started',createdAt:now,updatedAt:now}; try{await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceFinancialAllocations/${reversalId}`,fields:fields(reversalEntry)}}]);}catch{}}
+  const totalRefunded=existingRefunded; const orderRefundStatus=totalRefunded===canonicalGrossSubunits?'refunded':'partially_refunded'; const paymentIdLocal=String(payment.name).split('/').pop()!;
+  await fsPatch(token,`commercePayments/${paymentIdLocal}`,{refundStatus:orderRefundStatus,refundAmount:majorFromSubunits(totalRefunded),updatedAt:now}); await fsPatch(token,`commerceOrders/${orderId}`,{status:orderRefundStatus,refundedAt:totalRefunded===canonicalGrossSubunits?now:undefined,refundAmount:majorFromSubunits(totalRefunded),updatedAt:now});
+  await fsPatch(token,`commerceRefunds/${stableId('refund',refundId)}`,{financialStatus:cumulativeIsFull?'reversed':'partially_reversed',commissionReversalAmount:majorFromSubunits(reversal.commissionReversalSubunits),creatorReversalAmount:majorFromSubunits(reversal.creatorReversalSubunits),financialReversalId:reversalId,updatedAt:now});
+  await fsPatch(token,`creatorRevenue/${stableId('rev',orderId)}`,{refundAmount:majorFromSubunits(totalRefunded),refundedCreatorAmount:majorFromSubunits(previousCreatorReversed+reversal.creatorReversalSubunits),refundedPlatformCommissionAmount:majorFromSubunits(previousCommissionReversed+reversal.commissionReversalSubunits),commissionStatus:cumulativeIsFull?'reversed':'partially_reversed',updatedAt:now}).catch(()=>{});
+  return {refund:refundDoc,financialReversalId:reversalId};
+}
+
+async function getCreatorEarnings(token:string,uid:string){
+  const rows=await fsRunQueryAdvanced(token,'commerceFinancialAllocations',[fsFilter('creatorId','EQUAL',{stringValue:uid})],{limit:300});
+  let grossSalesSubunits=0,platformCommissionSubunits=0,netEarningsSubunits=0,refundedGrossSubunits=0,reversedCommissionSubunits=0,reversedCreatorSubunits=0;
+  for(const row of rows){ const f=row.fields||{}; const gross=Math.abs(Number(f.grossAmountSubunits||0)); const commission=Math.abs(Number(f.platformCommissionAmountSubunits||0)); const creator=Math.abs(Number(f.creatorNetAmountSubunits||0)); if(f.entryType==='refund_reversal'){refundedGrossSubunits+=gross;reversedCommissionSubunits+=commission;reversedCreatorSubunits+=creator;} else if(f.entryType==='sale' && f.financialStatus==='calculated'){grossSalesSubunits+=gross;platformCommissionSubunits+=commission;netEarningsSubunits+=creator;} }
+  netEarningsSubunits=Math.max(0,netEarningsSubunits-reversedCreatorSubunits);
+  return {creatorId:uid,currency:'INR',grossSales:majorFromSubunits(grossSalesSubunits),platformCommission:majorFromSubunits(platformCommissionSubunits),netEarnings:majorFromSubunits(netEarningsSubunits),refundedGross:majorFromSubunits(refundedGrossSubunits),reversedCommission:majorFromSubunits(reversedCommissionSubunits),reversedCreatorAmount:majorFromSubunits(reversedCreatorSubunits),grossSalesSubunits,platformCommissionSubunits,netEarningsSubunits,refundedGrossSubunits,reversedCommissionSubunits,reversedCreatorSubunits,generatedAt:nowIso()};
+}
+
+async function adminFinancialSummary(token:string,uid:string,b:any={},email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;}
+  const range=String(b?.range||'all'); const now=Date.now(); let fromMs=0; if(range==='today'){const d=new Date(now); d.setUTCHours(0,0,0,0); fromMs=d.getTime();} else if(range==='7d') fromMs=now-7*86400000; else if(range==='30d') fromMs=now-30*86400000;
+  const rows=await fsRunQueryAdvanced(token,'commerceFinancialAllocations',[fsFilter('entryType','EQUAL',{stringValue:'sale'})],{limit:300}); let gross=0,commission=0,creatorSales=0,creatorReversed=0,errors=0;
+  for(const row of rows){const f=row.fields||{}; const created=Date.parse(String(f.createdAt||'')); if(fromMs && (!Number.isFinite(created)||created<fromMs)) continue; if(f.financialStatus==='calculated'){gross+=Number(f.grossAmountSubunits||0);commission+=Number(f.platformCommissionAmountSubunits||0);creatorSales+=Number(f.creatorNetAmountSubunits||0);} else errors+=1;}
+  const refundRows=await fsRunQueryAdvanced(token,'commerceRefunds',[fsFilter('status','EQUAL',{stringValue:'processed'})],{limit:300}); const refunds=refundRows.filter(r=>{const created=Date.parse(String(r.fields.createdAt||''));return !fromMs || (Number.isFinite(created)&&created>=fromMs);}).reduce((n,r)=>n+Number(r.fields.amountSubunits||0),0);
+  const reversalRows=await fsRunQueryAdvanced(token,'commerceFinancialAllocations',[fsFilter('entryType','EQUAL',{stringValue:'refund_reversal'})],{limit:300}); for(const row of reversalRows){const f=row.fields||{}; const created=Date.parse(String(f.createdAt||'')); if(fromMs && (!Number.isFinite(created)||created<fromMs)) continue; creatorReversed+=Math.abs(Number(f.creatorNetAmountSubunits||0));}
+  return {currency:'INR',range,grossSales:majorFromSubunits(gross),platformCommission:majorFromSubunits(commission),creatorNet:majorFromSubunits(Math.max(0,creatorSales-creatorReversed)),refundedAmount:majorFromSubunits(refunds),financialErrors:errors,generatedAt:nowIso()};
+}
+
+async function reconcileCommission(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;}
+  const orderId=String(b.orderId||'').trim(); if(!orderId) throw new Error('orderId is required.'); const order=await fsGet(token,`commerceOrders/${orderId}`); if(!order) throw new Error('Order not found.');
+  const paymentId=String(order.fields.paymentId||''); if(!paymentId) throw new Error('Order payment linkage is missing.');
+  const allocation=await ensureFinancialAllocation(token,orderId,paymentId,{allowRecalculate:true});
+  await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`commission_reconciled:${orderId}:${nowIso()}`)}`,fields:fields({actorId:uid,actorType:'admin',targetType:'financial_allocation',targetId:allocation.allocationId,event:'commission_recalculated',timestamp:nowIso(),metadata:{financialStatus:allocation.financialStatus}})}}]);
+  return {allocation};
+}
+
 async function finalizeVerifiedRazorpayPayment(token:string,orderId:string,paymentId:string,uid?:string,eventKey?:string,providerEvent?:string){
   const order=await fsGet(token,`commerceOrders/${orderId}`);
   if(!order) throw new Error('Order not found.');
@@ -324,7 +556,8 @@ async function finalizeVerifiedRazorpayPayment(token:string,orderId:string,payme
   if(String(payment.fields.provider||'')!=='razorpay' || String(payment.fields.razorpayOrderId||'')!==String(order.fields.razorpayOrderId||'')) throw new Error('Provider linkage is invalid.');
   if(order.fields.status==='paid'){
     const eid=Array.isArray(order.fields.entitlementIds)?String(order.fields.entitlementIds[0]||''):''; const ent=eid?await fsGet(token,`entitlements/${eid}`):null;
-    return {order:{id:orderId,...order.fields},payment:{id:internalPaymentId,...payment.fields},entitlement:ent?{id:eid,...ent.fields}:undefined};
+    const allocation=await safeEnsureFinancialAllocation(token,orderId,internalPaymentId);
+    return {order:{id:orderId,...order.fields},payment:{id:internalPaymentId,...payment.fields},entitlement:ent?{id:eid,...ent.fields}:undefined,financialAllocation:allocation};
   }
   const providerPayment=await verifyCapturedPayment(order,paymentId);
   const item=Array.isArray(order.fields.items)?order.fields.items[0]:null; if(!item?.productId)throw new Error('Order item is invalid.');
@@ -348,12 +581,14 @@ async function finalizeVerifiedRazorpayPayment(token:string,orderId:string,payme
     if(refreshed?.fields?.status==='paid'){
       const eid=Array.isArray(refreshed.fields.entitlementIds)?String(refreshed.fields.entitlementIds[0]||''):''; const ent2=eid?await fsGet(token,`entitlements/${eid}`):null;
       const pay2=await fsGet(token,`commercePayments/${internalPaymentId}`);
-      return {order:{id:orderId,...refreshed.fields},payment:{id:internalPaymentId,...(pay2?.fields||{})},entitlement:ent2?{id:eid,...ent2.fields}:undefined};
+      const financialAllocation=await safeEnsureFinancialAllocation(token,orderId,internalPaymentId);
+      return {order:{id:orderId,...refreshed.fields},payment:{id:internalPaymentId,...(pay2?.fields||{})},entitlement:ent2?{id:eid,...ent2.fields}:undefined,financialAllocation};
     }
     throw err;
   }
   const finalOrder=await fsGet(token,`commerceOrders/${orderId}`),finalPayment=await fsGet(token,`commercePayments/${internalPaymentId}`),finalEnt=await fsGet(token,`entitlements/${entitlementId}`);
-  return {order:{id:orderId,...(finalOrder?.fields||order.fields)},payment:{id:internalPaymentId,...(finalPayment?.fields||payment.fields)},entitlement:{id:entitlementId,...(finalEnt?.fields||ent)}};
+  const financialAllocation=await safeEnsureFinancialAllocation(token,orderId,internalPaymentId);
+  return {order:{id:orderId,...(finalOrder?.fields||order.fields)},payment:{id:internalPaymentId,...(finalPayment?.fields||payment.fields)},entitlement:{id:entitlementId,...(finalEnt?.fields||ent)},financialAllocation};
 }
 
 async function createCheckout(token:string,uid:string,b:any){
@@ -442,11 +677,22 @@ async function handleRazorpayWebhook(req:any,res:any){
     const existing=await fsGet(token,`commerceWebhookEvents/${stableId('rp_evt',eventId)}`);
     if(existing)return res.status(200).json({received:true,duplicate:true});
     await finalizeVerifiedRazorpayPayment(token,String(order.name).split('/').pop()!,paymentId,undefined,eventId,eventType);
-  } else if(eventType==='payment.failed' || eventType==='order.paid' || eventType.startsWith('refund.')){
-    // Record/acknowledge provider events without inventing a paid state.
+  } else if(eventType==='payment.failed' || eventType==='order.paid'){
     const eventDocId=stableId('rp_evt',eventId);
     const existing=await fsGet(token,`commerceWebhookEvents/${eventDocId}`);
     if(!existing) await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({event:eventType,providerEventId:eventId,status:'received',createdAt:nowIso()})}}]);
+  } else if(['refund.created','refund.processed','refund.failed','refund.reversed','refund.speed_changed'].includes(eventType)){
+    const eventDocId=stableId('rp_evt',eventId);
+    const existing=await fsGet(token,`commerceWebhookEvents/${eventDocId}`);
+    if(existing) return res.status(200).json({received:true,duplicate:true});
+    const refundEntity=payload?.payload?.refund?.entity;
+    try{
+      await processRefundWebhook(token,eventType,refundEntity,eventId);
+      await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({event:eventType,providerEventId:eventId,status:'processed',createdAt:nowIso()})}}]);
+    }catch(error:any){
+      await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceWebhookEvents/${eventDocId}`,fields:fields({event:eventType,providerEventId:eventId,status:'error',error:String(error?.message||'Refund processing failed.').slice(0,300),createdAt:nowIso()})}}]).catch(()=>{});
+      throw error;
+    }
   }
   return res.status(200).json({received:true});
 }
@@ -625,7 +871,7 @@ async function listPublicPrices(token:string,productId:string){
 
 async function commerceDiagnostics(token:string,uid:string,email?:string,emailVerified?:boolean){
   if(!(await verifyCommerceAdmin(token,uid,email,emailVerified))) { const error:any=new Error('Administrator access required.'); error.statusCode=403; throw error; }
-  const names=['commerceProducts','commercePrices','commerceOrders','commercePayments','commerceRefunds','entitlements','creatorRevenue','creatorPayouts','creatorCommerceProfiles','commerceAuditLogs','commerceWebhookEvents'];
+  const names=['commerceProducts','commercePrices','commerceOrders','commercePayments','commerceRefunds','entitlements','creatorRevenue','creatorPayouts','creatorCommerceProfiles','commerceCommissionRules','commerceFinancialAllocations','commerceAuditLogs','commerceWebhookEvents'];
   const entries=await Promise.all(names.map(async name=>{try{return [name,await fsCount(token,name),null] as const;}catch(error:any){return [name,null,String(error?.message||'Count failed')] as const;}}));
   return {generatedAt:nowIso(),counts:Object.fromEntries(entries.map(([name,count])=>[name,count??0])),errors:Object.fromEntries(entries.filter(([,count,error])=>count===null).map(([name,,error])=>[name,error]))};
 }
@@ -681,5 +927,5 @@ export default async function handler(req:VercelRequest,res:VercelResponse){
   if(req.method!=='POST')return res.status(405).json({error:'Method not allowed'});
   if(action==='razorpayWebhook') return handleRazorpayWebhook(req,res);
   if(action==='razorpayRouteWebhook') return handleRazorpayRouteWebhook(req,res);
-  try{const raw=await readRawBody(req); let body:any={}; try{body=raw?JSON.parse(raw):{};}catch{throw new Error('Invalid JSON request body.');} const identity=await verifyFirebaseToken(authHeader(req)), uid=identity.uid, token=await serviceToken(); let out:any; if(action==='createProduct')out=await createProduct(token,uid,body); else if(action==='createPrice')out=await createPrice(token,uid,body); else if(action==='setProductStatus')out=await setProductStatus(token,uid,body); else if(action==='setProductVisibility')out=await setProductVisibility(token,uid,body); else if(action==='createCheckout')out=await createCheckout(token,uid,body); else if(action==='createSeller')out=await createSeller(token,uid,body); else if(action==='getSeller')out=await getSeller(token,uid); else if(action==='refreshSeller')out=await refreshSeller(token,uid); else if(action==='enableSeller')out=await enableSeller(token,uid); else if(action==='disableSeller')out=await disableSeller(token,uid); else if(action==='adminListSellers')out=await adminListSellers(token,uid,identity.email,identity.emailVerified); else if(action==='adminSetSellerStatus')out=await adminSetSellerStatus(token,uid,body,identity.email,identity.emailVerified); else if(action==='confirmRazorpayPayment'||action==='verifyPayment')out=await confirmRazorpayPayment(token,uid,body); else if(action==='paymentStatus')out=await getRazorpayPaymentStatus(token,uid,body); else if(action==='checkAccess')out=await checkAccess(token,uid,body); else if(action==='diagnostics')out=await commerceDiagnostics(token,uid,identity.email,identity.emailVerified); else return res.status(400).json({error:'Unknown commerce action.'}); return res.status(200).json(out);}catch(e:any){const status=Number(e?.statusCode); return res.status(status>=400&&status<=599?status:400).json({error:e?.message||'Commerce request failed.'});}
+  try{const raw=await readRawBody(req); let body:any={}; try{body=raw?JSON.parse(raw):{};}catch{throw new Error('Invalid JSON request body.');} const identity=await verifyFirebaseToken(authHeader(req)), uid=identity.uid, token=await serviceToken(); let out:any; if(action==='createProduct')out=await createProduct(token,uid,body); else if(action==='createPrice')out=await createPrice(token,uid,body); else if(action==='setProductStatus')out=await setProductStatus(token,uid,body); else if(action==='setProductVisibility')out=await setProductVisibility(token,uid,body); else if(action==='createCheckout')out=await createCheckout(token,uid,body); else if(action==='createSeller')out=await createSeller(token,uid,body); else if(action==='getSeller')out=await getSeller(token,uid); else if(action==='refreshSeller')out=await refreshSeller(token,uid); else if(action==='enableSeller')out=await enableSeller(token,uid); else if(action==='disableSeller')out=await disableSeller(token,uid); else if(action==='adminListSellers')out=await adminListSellers(token,uid,identity.email,identity.emailVerified); else if(action==='adminSetSellerStatus')out=await adminSetSellerStatus(token,uid,body,identity.email,identity.emailVerified); else if(action==='confirmRazorpayPayment'||action==='verifyPayment')out=await confirmRazorpayPayment(token,uid,body); else if(action==='paymentStatus')out=await getRazorpayPaymentStatus(token,uid,body); else if(action==='checkAccess')out=await checkAccess(token,uid,body); else if(action==='diagnostics')out=await commerceDiagnostics(token,uid,identity.email,identity.emailVerified); else if(action==='createCommissionRule')out=await createCommissionRule(token,uid,body,identity.email,identity.emailVerified); else if(action==='updateCommissionRule')out=await updateCommissionRule(token,uid,body,identity.email,identity.emailVerified); else if(action==='setCommissionRuleStatus')out=await setCommissionRuleStatus(token,uid,body,identity.email,identity.emailVerified); else if(action==='listCommissionRules'){if(!(await verifyCommerceAdmin(token,uid,identity.email,identity.emailVerified))){const e:any=new Error('Admin access required.'); e.statusCode=403; throw e;} out={rules:await listAllCommissionRules(token)};} else if(action==='simulateCommission')out=await simulateCommission(token,uid,body,identity.email,identity.emailVerified); else if(action==='getOrderFinancials')out=await getOrderFinancials(token,uid,body,identity.email,identity.emailVerified); else if(action==='getCreatorEarnings')out=await getCreatorEarnings(token,uid); else if(action==='adminFinancialSummary')out=await adminFinancialSummary(token,uid,body,identity.email,identity.emailVerified); else if(action==='reconcileCommission')out=await reconcileCommission(token,uid,body,identity.email,identity.emailVerified); else return res.status(400).json({error:'Unknown commerce action.'}); return res.status(200).json(out);}catch(e:any){const status=Number(e?.statusCode); return res.status(status>=400&&status<=599?status:400).json({error:e?.message||'Commerce request failed.'});}
 }

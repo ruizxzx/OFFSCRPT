@@ -5,7 +5,7 @@ const root=process.cwd();
 const read=(p)=>fs.readFileSync(path.join(root,p),'utf8');
 const files={api:read('api/commerce/index.ts'), route:read('server/razorpay-route.ts'), provider:read('server/payment-provider.ts'), lib:read('src/lib/commerce.ts'), ui:read('src/components/CreatorSellerOnboardingPanel.tsx'), rules:read('firestore.rules'), version:read('VERSION.md'), package:read('package.json'), admin:read('src/components/CommerceAdminPanel.tsx')};
 const checks=[
- ['version is V92.0.0', files.version.includes('V92.0.0')],
+ ['version is V92+ compatible', /^V9[2-9]\./.test(files.version.trim())],
  ['Route provider module exists', files.route.includes("POST") && files.route.includes("/accounts")],
  ['Linked Account creation endpoint uses v2/accounts', files.route.includes("https://api.razorpay.com/v2${path}") && files.route.includes("request('/accounts'")],
  ['creatorCommerceProfiles server storage', files.api.includes('creatorCommerceProfiles/')],

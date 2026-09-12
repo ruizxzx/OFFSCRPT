@@ -1,0 +1,27 @@
+OFFSCRPT V93.0.0 — BUILD VALIDATION
+
+Scope: Commission + Profit-Cut Engine
+Baseline: OFFSCRPT V92.0.0 supplied by the user
+
+Implemented validation:
+- server-side exact commission arithmetic
+- versioned commission rules
+- deterministic rule hierarchy
+- payment-gated calculation
+- idempotent financial allocation
+- creatorRevenue V93 snapshot fields
+- refund webhook processing
+- provider refund verification
+- reversal allocations
+- refund overage protection
+- creator earnings API/UI
+- Master Admin commission management UI
+- server-authoritative Firestore rules
+- V93 indexes
+- no automatic Route transfers
+- no V94 payout/balance engine
+- audit event support
+- V93 validation script
+
+Runtime note:
+The supplied archive does not contain installed node_modules. Full npm install/build/typecheck must be run in an environment with dependencies available; validation must not be represented as a successful production build unless those commands actually pass.
