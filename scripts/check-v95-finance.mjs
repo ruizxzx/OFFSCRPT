@@ -4,7 +4,7 @@ const root=process.cwd();
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 const checks=[]; const req=(label,ok)=>checks.push([label,Boolean(ok)]);
 const pkg=JSON.parse(read('package.json'));
-req('version 0.95.0',pkg.version==='0.95.0');
+req('version is V95+ compatible',/^0\.(?:9[6-9]|[1-9]\d)\.\d+$/.test(pkg.version));
 req('finance admin component',fs.existsSync(path.join(root,'src/components/FinanceAdminPanel.tsx')));
 const comp=read('src/components/FinanceAdminPanel.tsx');
 const api=read('api/commerce/index.ts');

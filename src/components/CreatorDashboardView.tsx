@@ -14,6 +14,7 @@ import { CreatorSellerOnboardingPanel } from './CreatorSellerOnboardingPanel';
 import { DigitalProductEnginePanel } from './DigitalProductEnginePanel';
 import { CreatorEarningsPanel } from './CreatorEarningsPanel';
 import { CreatorPayoutsPanel } from './CreatorPayoutsPanel';
+import { CreatorTrustPanel } from './CreatorTrustPanel';
 
 interface Props {
   articles: Article[];
@@ -208,7 +209,7 @@ export const CreatorDashboardView: React.FC<Props> = ({ articles, userProfile, o
         <button onClick={()=>setStudioSection('digital-products')} className={`border-2 border-black px-4 py-2 font-mono text-[10px] font-black uppercase ${studioSection==='digital-products'?'bg-[var(--color-primary)]':'bg-white'}`}>DIGITAL PRODUCTS</button>
       </section>
 
-      {studioSection === 'commerce' ? <CommerceFoundationPanel userProfile={userProfile}/> : studioSection === 'seller' ? <CreatorSellerOnboardingPanel userProfile={userProfile}/> : studioSection === 'earnings' ? <CreatorEarningsPanel/> : studioSection === 'payouts' ? <CreatorPayoutsPanel/> : studioSection === 'digital-products' ? <DigitalProductEnginePanel userProfile={userProfile}/> : <>
+      {studioSection === 'commerce' ? <CommerceFoundationPanel userProfile={userProfile}/> : studioSection === 'seller' ? <><CreatorSellerOnboardingPanel userProfile={userProfile}/><CreatorTrustPanel creatorId={userProfile.uid}/></> : studioSection === 'earnings' ? <CreatorEarningsPanel/> : studioSection === 'payouts' ? <CreatorPayoutsPanel/> : studioSection === 'digital-products' ? <DigitalProductEnginePanel userProfile={userProfile}/> : <>
       <section className="border-2 border-black bg-white p-4 flex flex-wrap items-center gap-2">
         <span className="font-mono text-[9px] font-black uppercase mr-2">RANGE</span>
         {[['7D', 7], ['30D', 30], ['90D', 90], ['6M', 180], ['1Y', 365], ['ALL', 'all']].map(([label, value]) => (

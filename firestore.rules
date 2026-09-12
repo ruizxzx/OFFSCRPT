@@ -1614,6 +1614,27 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // V96 Trust / Moderation / Reviews. Public and private projections are served through the
+    // server-authoritative Commerce API; clients never write or directly read internal moderation data.
+    match /commerceReviews/{reviewId} {
+      allow read, write: if false;
+    }
+    match /commerceReports/{reportId} {
+      allow read, write: if false;
+    }
+    match /commerceModerationCases/{caseId} {
+      allow read, write: if false;
+    }
+    match /commerceModerationActions/{actionId} {
+      allow read, write: if false;
+    }
+    match /commerceTrustSignals/{signalId} {
+      allow read, write: if false;
+    }
+    match /commerceReviewAggregates/{aggregateId} {
+      allow read, write: if false;
+    }
+
 
   }
 }

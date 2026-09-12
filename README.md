@@ -1,3 +1,7 @@
+# OFFSCRPT V96.0.0 — Trust, Moderation, Reviews & Marketplace Safety
+
+Server-authoritative marketplace trust and moderation layer built on the V95 Commerce/Finance stack.
+
 # V95.0.0 — ADMIN FINANCE + REVENUE INTELLIGENCE
 
 ## V88.0.6

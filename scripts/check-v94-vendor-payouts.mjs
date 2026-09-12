@@ -12,7 +12,7 @@ const lib=read('src/lib/commerce.ts');
 const dash=read('src/components/CreatorDashboardView.tsx');
 const admin=read('src/components/CommerceAdminPanel.tsx');
 const creator=read('src/components/CreatorPayoutsPanel.tsx');
-req('V94 architecture retained under 0.95.0',JSON.parse(read('package.json')).version==='0.95.0');
+req('V94 architecture retained under V96+',/^0\.(?:9[6-9]|[1-9]\d)\.\d+$/.test(JSON.parse(read('package.json')).version));
 req('vendor ledger collection',api.includes('commerceVendorLedger'));
 req('balance collection',api.includes('creatorCommerceBalances'));
 req('payout collection',api.includes('creatorPayouts'));
