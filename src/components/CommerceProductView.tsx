@@ -190,7 +190,7 @@ export const CommerceProductView:React.FC<Props>=({productId,userProfile,onNavig
       </nav>
       <button onClick={()=>onNavigate('shop')} className="border-2 border-black bg-white px-3 py-2 font-mono text-[9px] font-black uppercase inline-flex items-center gap-2 shadow-[3px_3px_0_#000]"><ArrowLeft className="w-3 h-3"/> BACK TO SHOP</button>
       <div className="grid lg:grid-cols-[minmax(0,1.15fr)_420px] gap-6 mt-5 items-start">
-        <section className="space-y-5">
+        <section className="order-2 lg:order-1 space-y-5">
           <div className="border-4 border-black bg-white overflow-hidden shadow-[7px_7px_0_#000]">
             <div className="aspect-[4/3] sm:aspect-[5/4] bg-neutral-100 relative">
               {currentImage ? <>
@@ -226,7 +226,7 @@ export const CommerceProductView:React.FC<Props>=({productId,userProfile,onNavig
           <ProductReviewsSection productId={productId} userProfile={userProfile}/>{creatorProducts.length>0&&<section><div className="font-mono text-[9px] font-black uppercase text-neutral-500 mb-2">FROM THIS CREATOR</div><h2 className="font-display font-black text-3xl uppercase mb-4">MORE FROM {creator?.displayName||'CREATOR'}</h2><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{creatorProducts.map(p=><MarketplaceProductCard key={p.id} product={p} price={creatorProductPrices[p.id]} onOpen={(id)=>{recordMarketplaceEvent('related_product_open',id,{source:'product-page'});onNavigate('product',id)}}/>)}</div></section>}
           {related.length>0&&<section><div className="font-mono text-[9px] font-black uppercase text-neutral-500 mb-2">DISCOVERY</div><h2 className="font-display font-black text-3xl uppercase mb-4">RELATED PRODUCTS</h2><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{related.map(p=><MarketplaceProductCard key={p.id} product={p} price={relatedPrices[p.id]} owned={p.id===productId?owned:false} onOpen={(id)=>{recordMarketplaceEvent('related_product_open',id,{source:'product-page'});onNavigate('product',id)}}/>)}</div></section>}
         </section>
-        <aside className="border-4 border-black bg-white shadow-[7px_7px_0_#000] lg:sticky lg:top-24 overflow-hidden">
+        <aside className="order-1 lg:order-2 border-4 border-black bg-white shadow-[7px_7px_0_#000] lg:sticky lg:top-24 overflow-hidden">
           <div className="p-5 sm:p-6">
             <div className="font-mono text-[9px] font-black uppercase text-neutral-500">BUY THIS PRODUCT</div>
             <div className="mt-2 text-4xl sm:text-5xl font-display font-black">{primaryPrice?money(primaryPrice.amount,primaryPrice.currency):'UNAVAILABLE'}</div>
