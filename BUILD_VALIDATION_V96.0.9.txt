@@ -1,0 +1,32 @@
+OFFSCRPT V96.0.9 VALIDATION
+===========================
+Focused runtime fixes:
+- Product review rendering is undefined-safe.
+- Review eligibility no longer orders by createdAt with reviewer/customer equality filters.
+- Own-review lookup no longer uses reviewerId+productId composite ordering.
+- Creator balance ledger load no longer orders creatorId+effectiveAt.
+- Creator payout load no longer orders creatorId+createdAt.
+- Admin payout list no longer requires filtered compound ordering.
+- Admin notification collection is only subscribed from client by Firestore-authorized moderators.
+- PWA manifest icon metadata is URL/type safe.
+
+Validation results:
+- V96 trust: PASS 68/68
+- Manual payouts: PASS 15/15
+- V95 finance: PASS 23/23
+- V94 vendor payouts: PASS 34/34
+- V93 commission: PASS 35/35
+- V92 creator/route: PASS 19/19
+- V89 marketplace: PASS
+- Firestore rules: PASS
+- Firestore schema: PASS
+- Runtime pattern scan: PASS
+- Imports: PASS
+- Firebase config: PASS
+- Deployment config: PASS
+- Public profile access: PASS
+- V96.0.9 focused hotfix: PASS 14/14
+- TS/TSX/MJS syntax transpilation: PASS 206/206; 0 diagnostics; 0 crashes (excluding declaration files)
+
+Environment limitation:
+- npm ci timed out in the execution environment, so dependency-backed production Vite build could not be verified here.

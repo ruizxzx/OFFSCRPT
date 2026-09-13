@@ -92,7 +92,7 @@ export function subscribeUnreadNotificationCount(userId: string, callback: (coun
   let unsubAdmin:()=>void = () => {};
   isPlatformModerator(userId).then(mod => {
     if (!active) return;
-    if (checkIsAdmin(auth.currentUser?.email) || mod) {
+    if (mod) {
       unsubAdmin = onSnapshot(query(collection(db, 'admin_notifications'), where('read', '==', false)), snap => { adminCount = snap.size; emit(); }, err => { console.warn('Admin notification subscription failed:', err); adminCount = 0; emit(); });
     }
   }).catch((error) => console.warn('OFFSCRPT recoverable operation failed:', error));
@@ -139,7 +139,7 @@ export function subscribeUserNotifications(userId: string, callback: (items: Not
   }, () => { userItems = []; emit(); });
   let unsubAdmin: (() => void) | undefined;
   isPlatformModerator(userId).then(mod => {
-    if (!active || (!checkIsAdmin(auth.currentUser?.email) && !mod)) return;
+    if (!active || !mod) return;
     unsubAdmin = onSnapshot(query(collection(db, 'admin_notifications'), orderBy('createdAt', 'desc'), limit(100)), snap => {
       adminItems = snap.docs.map(d => ({ id:`admin:${d.id}`, ...mapDocDates(d.data()) } as Notification));
       emit();
@@ -162,7 +162,7 @@ export async function markAllNotificationsRead(userId: string): Promise<void> {
   const batch = writeBatch(db);
   const userSnap = await getDocs(query(collection(db, 'users', userId, 'notifications'), where('read', '==', false), limit(100)));
   userSnap.docs.forEach(d => batch.update(d.ref, { read: true }));
-  if (checkIsAdmin(auth.currentUser?.email) || await isPlatformModerator(userId)) {
+  if (await isPlatformModerator(userId)) {
     try {
       const adminSnap = await getDocs(query(collection(db, 'admin_notifications'), where('read', '==', false), limit(100)));
       adminSnap.docs.forEach(d => batch.update(d.ref, { read: true }));
@@ -175,7 +175,7 @@ export async function markAllNotificationsRead(userId: string): Promise<void> {
 export async function getUserNotifications(userId: string): Promise<Notification[]> {
   const snap = await getDocs(query(collection(db, 'users', userId, 'notifications'), orderBy('createdAt', 'desc'), limit(100)));
   const items = snap.docs.map(d => ({ id: d.id, ...mapDocDates(d.data()) } as Notification));
-  if (checkIsAdmin(auth.currentUser?.email) || await isPlatformModerator(userId)) {
+  if (await isPlatformModerator(userId)) {
     try {
       const adminSnap = await getDocs(query(collection(db, 'admin_notifications'), orderBy('createdAt', 'desc'), limit(100)));
       const adminItems = adminSnap.docs.map(d => ({ id: `admin:${d.id}`, ...mapDocDates(d.data()) } as Notification));
@@ -189,7 +189,7 @@ export async function markNotificationsRead(userId: string): Promise<void> {
   const batch = writeBatch(db);
   const snap = await getDocs(query(collection(db, 'users', userId, 'notifications'), where('read', '==', false), limit(100)));
   snap.docs.forEach(d => batch.update(d.ref, { read: true }));
-  if (checkIsAdmin(auth.currentUser?.email) || await isPlatformModerator(userId)) {
+  if (await isPlatformModerator(userId)) {
     try {
       const adminSnap = await getDocs(query(collection(db, 'admin_notifications'), where('read', '==', false), limit(100)));
       adminSnap.docs.forEach(d => batch.update(d.ref, { read: true }));

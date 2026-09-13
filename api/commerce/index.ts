@@ -487,7 +487,10 @@ async function v94EnsureBalanceSnapshot(token:string,creatorId:string,currency='
 }
 
 async function v94LoadLedger(token:string,creatorId:string){
-  return fsRunQueryAdvanced(token,'commerceVendorLedger',[fsFilter('creatorId','EQUAL',{stringValue:creatorId})],{orderBy:[{fieldPath:'effectiveAt',direction:'ASCENDING'}],limit:1000});
+  // Avoid creatorId+effectiveAt composite-index dependency. Fetch the owner's ledger
+  // with the equality-only query and sort deterministically on the server.
+  const rows=await fsRunQueryAllUnordered(token,'commerceVendorLedger',[fsFilter('creatorId','EQUAL',{stringValue:creatorId})],500);
+  return rows.sort((a,b)=>String(a.fields?.effectiveAt||a.fields?.createdAt||'').localeCompare(String(b.fields?.effectiveAt||b.fields?.createdAt||'')) || String(a.name||'').localeCompare(String(b.name||'')));
 }
 
 function v94RecomputeBalance(rows:any[],nowMs=Date.now()){
@@ -738,7 +741,7 @@ async function rejectPayout(token:string,uid:string,b:any,email?:string,emailVer
   if(!(await verifyCommerceAdmin(token,uid,email,emailVerified)))throw v94PayoutError('UNAUTHORIZED','Admin access required.',403); const payoutId=String(b.payoutId||''); const row=await fsGet(token,`creatorPayouts/${payoutId}`); if(!row)throw v94PayoutError('NOT_FOUND','Payout not found.',404); if(!['requested','pending_review'].includes(String(row.fields.status||'')))throw v94PayoutError('INVALID_STATE','Only pending payouts can be rejected.'); const reason=String(b.reason||'Rejected by administrator.').trim().slice(0,300); const stamp=nowIso(); await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'rejected',failureCode:'ADMIN_REJECTED',failureMessage:reason,updatedAt:stamp}); await fsCommit(token,[{create:{name:`${firestoreBase()}/commerceAuditLogs/${stableId('audit',`payout_rejected:${payoutId}`)}`,fields:fields({actorId:uid,actorType:'admin',targetType:'payout',targetId:payoutId,event:'payout_rejected',timestamp:stamp,metadata:{reason}})}}]); return {payout:{id:payoutId,...row.fields,status:'rejected',failureCode:'ADMIN_REJECTED',failureMessage:reason,updatedAt:stamp}};
 }
 async function adminListPayouts(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
-  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified)))throw v94PayoutError('UNAUTHORIZED','Admin access required.',403); const filters:any=[]; if(String(b.status||''))filters.push(fsFilter('status','EQUAL',{stringValue:String(b.status)})); if(String(b.creatorId||''))filters.push(fsFilter('creatorId','EQUAL',{stringValue:String(b.creatorId)})); const rows=await fsRunQueryAdvanced(token,'creatorPayouts',filters,{orderBy:[{fieldPath:'createdAt',direction:'DESCENDING'}],limit:100}); return {payouts:rows.map(v94PublicPayout)};
+  if(!(await verifyCommerceAdmin(token,uid,email,emailVerified)))throw v94PayoutError('UNAUTHORIZED','Admin access required.',403); const filters:any=[]; if(String(b.status||''))filters.push(fsFilter('status','EQUAL',{stringValue:String(b.status)})); if(String(b.creatorId||''))filters.push(fsFilter('creatorId','EQUAL',{stringValue:String(b.creatorId)})); const rows=(await fsRunQueryAllUnordered(token,'creatorPayouts',filters,500)).sort((a,b)=>String(b.fields?.createdAt||'').localeCompare(String(a.fields?.createdAt||''))||String(b.name||'').localeCompare(String(a.name||''))).slice(0,100); return {payouts:rows.map(v94PublicPayout)};
 }
 async function reconcilePayout(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
   if(!(await verifyCommerceAdmin(token,uid,email,emailVerified)))throw v94PayoutError('UNAUTHORIZED','Admin access required.',403); const payoutId=String(b.payoutId||''); const row=await fsGet(token,`creatorPayouts/${payoutId}`); if(!row)throw v94PayoutError('NOT_FOUND','Payout not found.',404); let payout={payoutId,...row.fields}; if(String(payout.payoutMode||'route')==='manual') return {status:String(payout.status||'reserved'),payout:v94PublicPayout(payout),manual:true}; const transferId=String(payout.razorpayTransferId||''); if(!transferId){await fsPatch(token,`creatorPayouts/${payoutId}`,{status:'reconciliation_required',reconciliationStatus:'required',failureCode:'MISSING_TRANSFER_ID',updatedAt:nowIso()}); return {status:'reconciliation_required',payout:{id:payoutId,...payout,status:'reconciliation_required'}};}
@@ -1475,7 +1478,8 @@ async function v96Eligibility(token:string,uid:string,productId:string){
   if(!uid)throw v96Error('Authentication required.',401,'UNAUTHENTICATED');
   const product=await v96GetProduct(token,productId); if(String(product.fields.status||'')!=='active' || String(product.fields.visibility||'')!=='public' || String(product.fields.moderationStatus||'active')!=='active')return {eligible:false,reason:'PRODUCT_NOT_ELIGIBLE'};
   if(String(product.fields.creatorId||'')===uid)return {eligible:false,reason:'SELF_REVIEW_NOT_ALLOWED'};
-  const orders=await fsRunQueryAll(token,'commerceOrders',[fsFilter('customerId','EQUAL',{stringValue:uid})],[{fieldPath:'createdAt',direction:'DESCENDING'},{fieldPath:'__name__',direction:'DESCENDING'}]);
+  const orders=(await fsRunQueryAllUnordered(token,'commerceOrders',[fsFilter('customerId','EQUAL',{stringValue:uid})],500))
+    .sort((a,b)=>String(b.fields?.createdAt||'').localeCompare(String(a.fields?.createdAt||'')) || String(b.name||'').localeCompare(String(a.name||'')));
   for(const row of orders){const f=v96Fields(row); if(!['paid','partially_refunded','refunded'].includes(String(f.status||'')))continue; const items=Array.isArray(f.items)?f.items:[]; for(let i=0;i<items.length;i++){if(String(items[i]?.productId||'')!==productId)continue; const orderItemId=`${v96DocId(row)}:${i}`; const reviewId=v96Id('review',`${uid}:${orderItemId}`); const existing=await fsGet(token,`commerceReviews/${reviewId}`); if(existing)return {eligible:false,reason:'ALREADY_REVIEWED',orderId:v96DocId(row),orderItemId,reviewId,existing:v96CleanReviewPublic(existing)}; return {eligible:true,reason:'ELIGIBLE',orderId:v96DocId(row),orderItemId,reviewId}; }}
   return {eligible:false,reason:'PURCHASE_REQUIRED'};
 }
@@ -1488,7 +1492,7 @@ async function v96CreateReview(token:string,uid:string,b:any){
   if(!eligibility.eligible)throw v96Error(eligibility.reason==='ALREADY_REVIEWED'?'This purchase already has a review.':eligibility.reason==='PURCHASE_REQUIRED'?'A verified purchase is required to review this product.':'This purchase is not currently eligible for review.');
   const rating=Number(b.rating); if(!Number.isInteger(rating)||rating<1||rating>5)throw v96Error('Rating must be an integer from 1 to 5.');
   const title=v96Text(b.title,V96_MAX_REVIEW_TITLE); const body=v96Text(b.body,V96_MAX_REVIEW_BODY); if(!body)throw v96Error('Review text is required.');
-  const today=new Date().toISOString().slice(0,10); const recentReviews=await fsRunQueryAdvanced(token,'commerceReviews',[fsFilter('reviewerId','EQUAL',{stringValue:uid})],{limit:V96_DAILY_REVIEW_LIMIT+1,orderBy:[{fieldPath:'createdAt',direction:'DESCENDING'}]}); const reviewsToday=recentReviews.filter(row=>String(row.fields?.createdAt||'').slice(0,10)===today).length; if(reviewsToday>=V96_DAILY_REVIEW_LIMIT) throw v96Error('Daily review limit reached. Try again tomorrow.',429,'RATE_LIMITED');
+  const today=new Date().toISOString().slice(0,10); const recentReviews=await fsRunQueryAllUnordered(token,'commerceReviews',[fsFilter('reviewerId','EQUAL',{stringValue:uid})],500); const reviewsToday=recentReviews.filter(row=>String(row.fields?.createdAt||'').slice(0,10)===today).length; if(reviewsToday>=V96_DAILY_REVIEW_LIMIT) throw v96Error('Daily review limit reached. Try again tomorrow.',429,'RATE_LIMITED');
   const profile=await fsGet(token,`users/${uid}`); const pfUser=profile?.fields||{}; const now=v96Now(); const reviewId=String(eligibility.reviewId||''); if(!reviewId)throw v96Error('Review identity could not be established.',500,'REVIEW_ID_ERROR');
   const requestId=v96Text(b.requestId||b.idempotencyKey||reviewId,200);
   const existing=await fsGet(token,`commerceReviews/${reviewId}`);
@@ -1562,9 +1566,10 @@ async function v96ListPublicReviews(token:string,productId:string,params:any){
 
 async function v96MyReviews(token:string,uid:string,b:any){
   const limitCount=Math.max(1,Math.min(50,Number(b.limit||20))); const requestedProduct=v96Text(b.productId,200);
-  // Avoid the reviewerId+productId composite requirement; the existing reviewerId+updatedAt
-  // index is sufficient, and product filtering is enforced server-side.
-  const rows=await fsRunQueryAdvanced(token,'commerceReviews',[fsFilter('reviewerId','EQUAL',{stringValue:uid})],{limit:100,orderBy:[{fieldPath:'updatedAt',direction:'DESCENDING'},{fieldPath:'__name__',direction:'DESCENDING'}]});
+  // Deliberately avoid reviewerId/productId/updatedAt composite requirements.
+  // The equality-only query is sorted and optionally filtered on the server.
+  const rows=(await fsRunQueryAllUnordered(token,'commerceReviews',[fsFilter('reviewerId','EQUAL',{stringValue:uid})],500))
+    .sort((a,b)=>String(b.fields?.updatedAt||b.fields?.createdAt||'').localeCompare(String(a.fields?.updatedAt||a.fields?.createdAt||'')) || String(b.name||'').localeCompare(String(a.name||'')));
   const filtered=requestedProduct?rows.filter(r=>String(r.fields?.productId||'')===requestedProduct):rows;
   return {reviews:filtered.slice(0,limitCount).map(v96CleanReviewPublic)};
 }

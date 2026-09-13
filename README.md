@@ -1,3 +1,6 @@
+# OFFSCRPT V96.0.9 — Runtime Hotfix
+
+
 # OFFSCRPT V96.0.7 — MANUAL CREATOR PAYOUTS
 
 Customer payments are collected by OFFSCRPT. Razorpay Route transfers are disabled for new creator payouts; authorized admins manually repay creators using the payout details stored in their seller profile.

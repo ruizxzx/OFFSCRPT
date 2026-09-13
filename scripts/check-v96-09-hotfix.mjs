@@ -1,0 +1,26 @@
+import fs from 'node:fs';
+import path from 'node:path';
+const root = process.cwd();
+const read = f => fs.readFileSync(path.join(root,f),'utf8');
+let passed=0;
+function ok(name,cond){if(!cond) throw new Error(`FAIL — ${name}`); console.log(`PASS — ${name}`); passed++;}
+const api=read('api/commerce/index.ts');
+const reviews=read('src/components/ProductReviewsSection.tsx');
+const payouts=read('src/components/CreatorPayoutsPanel.tsx');
+const community=read('src/lib/community.ts');
+const pkg=JSON.parse(read('package.json'));
+ok('version 0.96.9',pkg.version==='0.96.9');
+ok('review product query uses unordered equality path',api.includes("fsRunQueryAllUnordered(token,'commerceReviews',[\n    fsFilter('productId','EQUAL'"));
+ok('eligibility orders avoid createdAt composite order',api.includes("fsRunQueryAllUnordered(token,'commerceOrders',[fsFilter('customerId','EQUAL'"));
+ok('my reviews avoid composite query',api.includes("async function v96MyReviews") && api.includes("fsRunQueryAllUnordered(token,'commerceReviews',[fsFilter('reviewerId'"));
+ok('creator ledger balance avoids effectiveAt composite',api.includes("async function v94LoadLedger") && api.includes("fsRunQueryAllUnordered(token,'commerceVendorLedger'"));
+ok('creator payouts avoid creatorId+createdAt composite',api.includes("async function listCreatorPayouts") && api.includes("fsRunQueryAllUnordered(token,'creatorPayouts'"));
+ok('admin payouts avoid composite ordering',api.includes("async function adminListPayouts") && api.includes("fsRunQueryAllUnordered(token,'creatorPayouts'"));
+ok('product review rating render is NaN-safe',reviews.includes("Number(aggregate.averageRating||0).toFixed(1)"));
+ok('star aria render is NaN-safe',reviews.includes("Number(value||0)"));
+ok('creator payout UI reads API wrappers',payouts.includes('getCreatorBalance()') && payouts.includes('getCreatorPayouts()'));
+ok('admin notification subscription limited to moderators',community.includes('if (mod) {') && !community.includes("if (checkIsAdmin(auth.currentUser?.email) || mod) {"));
+ok('manifest icon URLs are absolute-safe', /offscrpt-icon\.svg/.test(read('src/App.tsx')) && read('public/manifest.webmanifest').includes('image/svg+xml'));
+ok('manual payout mode remains active',api.includes("payoutMode:'manual'") && api.includes("routeAccountStatus:'disabled_manual_mode'"));
+ok('no V96 direct V94 balance writes',api.includes('V96 TRUST / MODERATION / REVIEWS') && !api.slice(api.indexOf('V96 TRUST / MODERATION / REVIEWS')).includes('creatorCommerceBalances/') );
+console.log(`V96.0.9 hotfix checks: ${passed}/14 passed`);

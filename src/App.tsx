@@ -422,8 +422,8 @@ export default function App() {
         theme_color: siteConfig.themePrimaryColor || '#FFD600',
         orientation: 'portrait-primary',
         icons: [
-          { src: logoUrl, sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
-          { src: logoUrl, sizes: '512x512', type: 'image/png', purpose: 'any maskable' }
+          { src: (/^https?:\/\//i.test(String(logoUrl)) ? String(logoUrl) : `${window.location.origin}/offscrpt-icon.svg`), sizes: '192x192', type: 'image/svg+xml', purpose: 'any maskable' },
+          { src: (/^https?:\/\//i.test(String(logoUrl)) ? String(logoUrl) : `${window.location.origin}/offscrpt-icon.svg`), sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
         ]
       };
       const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
