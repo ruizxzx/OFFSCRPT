@@ -10,7 +10,7 @@ import { listPublicCreatorCommerceProducts, listUserEntitlements, type CommerceP
 import { getMarketplaceProductsByIds, getSavedMarketplaceProductIds, toggleMarketplaceSave, recordMarketplaceEvent } from '../lib/marketplace';
 import { MarketplaceProductCard } from './MarketplaceProductCard';
 import { CommerceReportButton } from './CommerceReportButton';
-import { getCreatorTrustSignals } from '../lib/commerce';
+import { getCreatorTrustSignals, getPublicCreatorTrustSignals } from '../lib/commerce';
 
 interface Props { username: string; articles: Article[]; currentUserUid?: string; currentUsername?: string; onNavigate:(page:PageView,param?:string)=>void; }
 const safeUrl=(v:string)=>{try{const u=new URL(v,window.location.origin);return ['http:','https:','mailto:'].includes(u.protocol)?u.href:''}catch{return ''}};

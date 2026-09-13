@@ -1,0 +1,46 @@
+OFFSCRPT V96.05 FIXED BUILD VALIDATION
+=====================================
+
+SECOND-PASS AUDIT OF SUPPLIED V96 ARCHIVE
+
+Source: OFFSCRPT V96.0.0 Trust/Moderation/Reviews archive supplied by user
+Target: V96.05 Fixed Build
+
+SOURCE VALIDATION
+- TypeScript/TSX parse: PASS (159/159)
+- V96 Trust validator: PASS (58/58)
+- V95 Finance validator: PASS (23/23)
+- V94 Vendor/Payout validator: PASS (34/34)
+- V93 Commission validator: PASS (35/35)
+- V92 Creator/Route validator: PASS (19/19)
+- V89 Marketplace validator: PASS
+- Firestore rules validator: PASS
+- Firestore schema validator: PASS
+- Runtime pattern validator: PASS
+- Import validator: PASS
+- Deployment configuration validator: PASS
+- Commerce validator: PASS
+- Public profile validator: PASS
+
+ADDITIONAL SECOND-PASS FIXES
+- repaired TrustModerationAdminPanel JSX structure
+- fixed unsupported reopen UI action
+- added load-more review UI for the server cursor
+- fixed admin-only reviewer/order context projection
+- fixed product/creator moderation case binding and linked report resolution
+- fixed master-admin assignee resolution through platformRole
+- added daily review abuse throttling
+- fixed product visibility in review eligibility checks
+- fixed creator trust target lookup to merge creator profile with user identity
+- prevented false duplicate-review health positives for legacy reviews without orderItemId
+- fixed V95 historical finance query truncation/status coverage already present in the supplied corrective tree
+- fixed CreatorView public trust import
+
+ENVIRONMENT-LIMITED CHECKS
+- npm ci: ENVIRONMENT BLOCKED / transport timeout during dependency installation
+- npm run typecheck: NOT VERIFIED because dependencies could not be installed completely
+- npm run build: NOT VERIFIED because the full dependency installation did not complete
+- live Firebase test: NOT RUN
+- live Razorpay/Route test: NOT RUN
+
+No claim of 100% bug-free live production behavior is made without those environment/deployment checks.

@@ -4,7 +4,7 @@ const root=process.cwd();
 const read=(p)=>fs.readFileSync(path.join(root,p),'utf8');
 const checks=[]; const ok=(name,cond)=>checks.push([name,!!cond]);
 const pkg=JSON.parse(read('package.json')); const api=read('api/commerce/index.ts'); const rules=read('firestore.rules'); const lib=read('src/lib/commerce.ts'); const indexes=read('firestore.indexes.json');
-ok('version 0.96.0',pkg.version==='0.96.0');
+ok('version 0.96.5',pkg.version==='0.96.5');
 ok('review collection API',api.includes('commerceReviews'));
 ok('report collection API',api.includes('commerceReports'));
 ok('moderation cases API',api.includes('commerceModerationCases'));
@@ -21,4 +21,28 @@ ok('firestore review denied',rules.includes('match /commerceReviews/{reviewId}')
 ok('firestore report denied',rules.includes('match /commerceReports/{reportId}') && rules.includes('allow read, write: if false;'));
 ok('indexes added',indexes.includes('commerceReviews') && indexes.includes('commerceModerationCases'));
 ok('client wrappers present',lib.includes('Review') && lib.includes('CommerceReport'));
+
+ok('Firestore V96 path whitelist',api.includes('commerceReviews|commerceReports|commerceModerationCases|commerceModerationActions|commerceTrustSignals|commerceReviewAggregates'));
+ok('create review atomic commit',api.includes('fsCommitWithPrecondition(token,[{create:{name:`${firestoreBase()}/commerceReviews/${reviewId}`'));
+ok('report audit atomic',api.includes("v96AuditWrite(reportAction)" ) && api.includes('fsCommitWithPrecondition(token,writes,pre)'));
+ok('review public moderation filter',api.includes("fsFilter('moderationStatus','EQUAL',{stringValue:'approved'})"));
+ok('review cursor support',api.includes('encodeV96QueryCursor') && api.includes('decodeV96QueryCursor'));
+ok('moderation queue cursor support',api.includes("const order=[{fieldPath:'updatedAt',direction:'DESCENDING' as const},{fieldPath:'__name__',direction:'DESCENDING' as const}"));
+ok('full trust health pagination',api.includes("fsRunQueryAll(token,'commerceReviews')") && api.includes("fsRunQueryAll(token,'commerceAuditLogs')"));
+ok('aggregate rebuild audits',api.includes("action:'review_aggregate_rebuilt'") && api.includes('v96AuditWrite(actionDoc)'));
+ok('order report ownership',api.includes('You can only report an order belonging to you.'));
+ok('no public reviewer UID',api.includes('function v96CleanReviewPublic') && !api.slice(api.indexOf('function v96CleanReviewPublic'), api.indexOf('function v96ReviewContribution')).includes('reviewerId'));
+ok('review creation rate limit',api.includes('V96_DAILY_REVIEW_LIMIT') && api.includes('RATE_LIMITED'));
+ok('admin case target context',api.includes('function v96AdminTargetSafe') && api.includes('target:v96AdminTargetSafe'));
+ok('moderation case target binding',api.includes('Case target mismatch.') && api.includes('linkedCase'));
+ok('master admin assignee resolution',api.includes("platformRole==='master_admin'"));
+
+
+ok('aggregate includes ratingTotal',api.includes('ratingTotal') && api.includes("['reviewCount','ratingTotal','averageRating"));
+ok('unassign clears assignment',api.includes("action==='unassign'?null:cf.assignedTo"));
+ok('review edit clears case resolution',api.includes('resolutionCode:null,resolvedAt:null,resolvedBy:null'));
+ok('V95 historical order statuses',api.includes("['paid','partially_refunded','refunded']"));
+ok('V95 full financial pagination',api.includes("fsRunQueryAll(token,'commerceFinancialAllocations')") && api.includes("fsRunQueryAll(token,'commerceVendorLedger')"));
+ok('trust health orphan target checks',api.includes('orphan_report_target') && api.includes('orphan_case_target'));
+
 let fails=0; for(const [n,c] of checks){console.log(`${c?'PASS':'FAIL'} — ${n}`); if(!c)fails++;} console.log(`V96 checks: ${checks.length-fails}/${checks.length} passed`); if(fails)process.exit(1);

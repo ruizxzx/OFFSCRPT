@@ -269,7 +269,7 @@ export type CommerceReportReason = 'spam'|'harassment'|'hate_or_abusive_content'
 export type CommerceModerationCaseStatus = 'open'|'queued'|'under_review'|'resolved'|'escalated'|'dismissed';
 export type CommerceModerationPriority = 'low'|'normal'|'high'|'critical';
 export interface CommerceReview {
-  id:string; productId:string; creatorId:string; reviewerId:string; orderId:string; orderItemId?:string;
+  id:string; productId:string; creatorId:string; reviewerId?:string; orderId?:string; orderItemId?:string;
   rating:number; title?:string; body:string; verifiedPurchase:boolean; status:CommerceReviewStatus;
   moderationStatus?:string; reportCount?:number; reviewerDisplayName?:string; reviewerAvatar?:string;
   createdAt?:string; updatedAt?:string; publishedAt?:string; editedAt?:string; removedAt?:string; version?:number;
@@ -282,8 +282,8 @@ export interface CommerceModerationAction { id:string; action:string; targetType
 export interface CommerceTrustSignals { productId:string; creatorId:string; sellerStatus:string; trustStatus:string; productPublished:boolean; verifiedReviewCount:number; reviewCount:number; averageRating:number; trustedSeller:boolean; generatedAt:string; }
 export interface CommerceTrustHealth { status:string; healthy:number; warnings:number; critical:number; issues:any[]; checkedAt:string; recordsScanned:any; }
 
-export async function getProductReviews(productId:string, options:{sort?:'recent'|'highest'|'lowest'|'verified';limit?:number}={}):Promise<{reviews:CommerceReview[];nextCursor:string|null;aggregate:CommerceReviewAggregate}> {
-  return callPublicApi('getProductReviews',{productId,sort:String(options.sort||'recent'),limit:String(Math.min(50,Math.max(1,Number(options.limit||20))))});
+export async function getProductReviews(productId:string, options:{sort?:'recent'|'highest'|'lowest'|'verified';limit?:number;cursor?:string}={}):Promise<{reviews:CommerceReview[];nextCursor:string|null;aggregate:CommerceReviewAggregate}> {
+  return callPublicApi('getProductReviews',{productId,sort:String(options.sort||'recent'),limit:String(Math.min(50,Math.max(1,Number(options.limit||20)))),...(options.cursor?{cursor:options.cursor}:{})});
 }
 export async function getReviewAggregate(productId:string):Promise<CommerceReviewAggregate>{ return callPublicApi('getReviewAggregate',{productId}); }
 export async function getCommerceTrustSignals(productId:string):Promise<CommerceTrustSignals>{ return callPublicApi('getTrustSignals',{productId}); }
@@ -292,8 +292,8 @@ export async function getPublicCreatorTrustSignals(creatorId:string):Promise<any
 export async function getReviewEligibility(productId:string):Promise<CommerceReviewEligibility>{ return callApi('getReviewEligibility',{productId}); }
 export async function createCommerceReview(input:{productId:string;rating:number;title?:string;body:string;requestId?:string}):Promise<{review:CommerceReview;verifiedPurchase:boolean;status:string}>{ return callApi('createReview',input as Record<string,unknown>); }
 export async function updateCommerceReview(input:{reviewId:string;rating:number;title?:string;body:string;requestId?:string}):Promise<{review:CommerceReview;status:string}>{ return callApi('updateReview',input as Record<string,unknown>); }
-export async function removeCommerceReview(reviewId:string,requestId?:string):Promise<{removed:boolean}>{ return callApi('removeReview',{reviewId,requestId}); }
-export async function getMyCommerceReviews():Promise<{reviews:CommerceReview[]}>{ return callApi('getMyReviews'); }
+export async function removeCommerceReview(reviewId:string,requestId?:string):Promise<{removed:boolean;idempotent?:boolean}>{ return callApi('removeReview',{reviewId,requestId}); }
+export async function getMyCommerceReviews(productId?:string):Promise<{reviews:CommerceReview[]}>{ return callApi('getMyReviews',productId?{productId}:{ }); }
 export async function createCommerceReport(input:{targetType:'review'|'product'|'creator'|'order';targetId:string;reasonCode:CommerceReportReason;description?:string}):Promise<{report:CommerceReport;case:CommerceModerationCase}>{ return callApi('createCommerceReport',input as Record<string,unknown>); }
 export async function adminGetModerationQueue(filters:Record<string,unknown>={}):Promise<{cases:CommerceModerationCase[];nextCursor:string|null}>{ return callApi('adminModerationQueue',filters); }
 export async function adminGetModerationCase(caseId:string):Promise<{case:CommerceModerationCase;reports:CommerceReport[];target:any;actions:CommerceModerationAction[]}>{ return callApi('adminModerationCase',{caseId}); }
