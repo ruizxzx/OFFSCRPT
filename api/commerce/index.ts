@@ -1513,21 +1513,42 @@ async function v96RemoveOwnReview(token:string,uid:string,b:any){
 async function v96ListPublicReviews(token:string,productId:string,params:any){
   const product=await v96GetProduct(token,productId);
   if(String(product.fields.status||'')!=='active'||String(product.fields.visibility||'')!=='public'||String(product.fields.moderationStatus||'active')!=='active')return {reviews:[],nextCursor:null,aggregate:await v96GetAggregate(token,productId)};
-  const sort=v96Text(params.sort,'20'); const normalized=V96_PUBLIC_SORTS.has(sort)?sort:'recent'; const limitCount=Math.max(1,Math.min(50,Number(params.limit||20)));
-  const filters=[fsFilter('productId','EQUAL',{stringValue:productId}),fsFilter('status','EQUAL',{stringValue:'published'}),fsFilter('moderationStatus','EQUAL',{stringValue:'approved'})];
+  const sort=v96Text(params.sort,'recent'); const normalized=V96_PUBLIC_SORTS.has(sort)?sort:'recent'; const limitCount=Math.max(1,Math.min(50,Number(params.limit||20)));
+  // Only query on the fields covered by the established V96/V95 indexes. moderationStatus is
+  // intentionally filtered server-side so a deployed database with the older product/status
+  // review index remains usable without a new composite-index rollout.
+  const filters=[fsFilter('productId','EQUAL',{stringValue:productId}),fsFilter('status','EQUAL',{stringValue:'published'})];
   let order:any[]=[{fieldPath:'createdAt',direction:'DESCENDING'}];
   if(normalized==='highest')order=[{fieldPath:'rating',direction:'DESCENDING'},{fieldPath:'createdAt',direction:'DESCENDING'}];
   if(normalized==='lowest')order=[{fieldPath:'rating',direction:'ASCENDING'},{fieldPath:'createdAt',direction:'DESCENDING'}];
   if(normalized==='verified')order=[{fieldPath:'verifiedPurchase',direction:'DESCENDING'},{fieldPath:'createdAt',direction:'DESCENDING'}];
   order=[...order,{fieldPath:'__name__',direction:'DESCENDING'}];
-  const cursor=decodeV96QueryCursor(params.cursor); const rows=await fsRunQueryAdvanced(token,'commerceReviews',filters,{limit:limitCount+1+(cursor?1:0),orderBy:order,startAt:cursor?{values:cursor.values,before:false}:undefined});
-  const cursorLastId=cursor?.values?.[cursor.values.length-1]?.referenceValue?String(cursor.values[cursor.values.length-1].referenceValue).split('/').pop():'';
-  const deduped=cursorLastId&&rows.length&&v96DocId(rows[0])===cursorLastId?rows.slice(1):rows;
-  const page=deduped.slice(0,limitCount); const next=deduped.length>limitCount?encodeV96QueryCursor(page[page.length-1],order):null;
+  const cursor=decodeV96QueryCursor(params.cursor);
+  let start=cursor?.values;
+  const publicRows:any[]=[];
+  let safety=0;
+  while(publicRows.length<limitCount+1 && safety++<20){
+    const rows=await fsRunQueryAdvanced(token,'commerceReviews',filters,{limit:Math.min(100,Math.max(limitCount+1,50)),orderBy:order,startAt:start?{values:start,before:false}:undefined});
+    if(!rows.length) break;
+    const firstCursorId=start?.[start.length-1]?.referenceValue?String(start[start.length-1].referenceValue).split('/').pop():'';
+    const page=firstCursorId&&v96DocId(rows[0])===firstCursorId?rows.slice(1):rows;
+    for(const row of page){if(v96ReviewIsPublic(v96Fields(row)))publicRows.push(row); if(publicRows.length>=limitCount+1)break;}
+    if(publicRows.length>=limitCount+1)break;
+    if(rows.length<Math.min(100,Math.max(limitCount+1,50))) break;
+    start=v96CursorValuesForRow(rows[rows.length-1],order);
+  }
+  const page=publicRows.slice(0,limitCount); const next=publicRows.length>limitCount?encodeV96QueryCursor(publicRows[limitCount-1],order):null;
   return {reviews:page.map(v96CleanReviewPublic),nextCursor:next,aggregate:await v96GetAggregate(token,productId)};
 }
 
-async function v96MyReviews(token:string,uid:string,b:any){const limitCount=Math.max(1,Math.min(50,Number(b.limit||20))); const filters:any[]=[fsFilter('reviewerId','EQUAL',{stringValue:uid})]; if(v96Text(b.productId,200)) filters.push(fsFilter('productId','EQUAL',{stringValue:v96Text(b.productId,200)})); const rows=await fsRunQueryAdvanced(token,'commerceReviews',filters,{limit:limitCount,orderBy:[{fieldPath:'updatedAt',direction:'DESCENDING'},{fieldPath:'__name__',direction:'DESCENDING'}]}); return {reviews:rows.map(v96CleanReviewPublic)};}
+async function v96MyReviews(token:string,uid:string,b:any){
+  const limitCount=Math.max(1,Math.min(50,Number(b.limit||20))); const requestedProduct=v96Text(b.productId,200);
+  // Avoid the reviewerId+productId composite requirement; the existing reviewerId+updatedAt
+  // index is sufficient, and product filtering is enforced server-side.
+  const rows=await fsRunQueryAdvanced(token,'commerceReviews',[fsFilter('reviewerId','EQUAL',{stringValue:uid})],{limit:100,orderBy:[{fieldPath:'updatedAt',direction:'DESCENDING'},{fieldPath:'__name__',direction:'DESCENDING'}]});
+  const filtered=requestedProduct?rows.filter(r=>String(r.fields?.productId||'')===requestedProduct):rows;
+  return {reviews:filtered.slice(0,limitCount).map(v96CleanReviewPublic)};
+}
 async function v96GetReviewAggregate(token:string,productId:string){const product=await v96GetProduct(token,productId); if(String(product.fields.status||'')!=='active'||String(product.fields.visibility||'')!=='public'||String(product.fields.moderationStatus||'active')!=='active')throw v96Error('Product not publicly available.',404,'NOT_FOUND'); return {productId,...v96Fields(await v96GetAggregate(token,productId))};}
 async function v96GetTrustSignals(token:string,productId:string,creatorId?:string){
   const product=await v96GetProduct(token,productId); if(String(product.fields.status||'')!=='active'||String(product.fields.visibility||'')!=='public'||String(product.fields.moderationStatus||'active')!=='active')throw v96Error('Product not publicly available.',404,'NOT_FOUND');
@@ -1536,7 +1557,11 @@ async function v96GetTrustSignals(token:string,productId:string,creatorId?:strin
   return {productId,creatorId:cid,sellerStatus:operational?'active':'not_public',trustStatus:publicTrust,productPublished:true,verifiedReviewCount:Number(af.verifiedReviewCount||0),reviewCount:Number(af.reviewCount||0),averageRating:Number(af.averageRating||0),trustedSeller:publicTrust==='trusted'&&Number(af.verifiedReviewCount||0)>=5&&Number(af.averageRating||0)>=4,generatedAt:v96Now()};
 }
 async function v96GetCreatorTrustSignals(token:string,creatorId:string){
-  const products=await fsRunQueryAll(token,'commerceProducts',[fsFilter('creatorId','EQUAL',{stringValue:creatorId}),fsFilter('status','EQUAL',{stringValue:'active'}),fsFilter('visibility','EQUAL',{stringValue:'public'})],[{fieldPath:'updatedAt',direction:'DESCENDING'},{fieldPath:'__name__',direction:'DESCENDING'}]);
+  // Query only the creatorId field with the established creatorId+updatedAt index. Status and
+  // visibility remain server-authoritative filters, preventing the product page from requiring
+  // the creatorId+status+visibility+updatedAt composite shown in the browser error.
+  const products= (await fsRunQueryAll(token,'commerceProducts',[fsFilter('creatorId','EQUAL',{stringValue:creatorId})],[{fieldPath:'updatedAt',direction:'DESCENDING'},{fieldPath:'__name__',direction:'DESCENDING'}]))
+    .filter(p=>String(p.fields?.status||'')==='active'&&String(p.fields?.visibility||'')==='public');
   let reviewCount=0,verifiedReviewCount=0,totalRating=0; const productSignals:any[]=[];
   for(const p of products){if(String(p.fields?.moderationStatus||'active')!=='active'||String(p.fields?.trustState||'active')==='restricted')continue; const pid=v96DocId(p), agg=await v96GetAggregate(token,pid), a=agg.fields||{}; reviewCount+=Number(a.reviewCount||0); verifiedReviewCount+=Number(a.verifiedReviewCount||0); totalRating+=Number(a.averageRating||0)*Number(a.reviewCount||0); productSignals.push({productId:pid,title:String(p.fields?.title||''),reviewCount:Number(a.reviewCount||0),averageRating:Number(a.averageRating||0),verifiedReviewCount:Number(a.verifiedReviewCount||0)});}
   const seller=await fsGet(token,`creatorCommerceProfiles/${creatorId}`), sellerEnabled=seller?.fields?.sellerEnabled!==false, sellerStatus=String(seller?.fields?.onboardingStatus||'not_started'), operational=sellerEnabled&&sellerStatus==='active', raw=String(seller?.fields?.trustStatus||'new'), averageRating=reviewCount?Number((totalRating/reviewCount).toFixed(2)):0, trustedSeller=operational&&raw==='trusted'&&verifiedReviewCount>=5&&averageRating>=4;

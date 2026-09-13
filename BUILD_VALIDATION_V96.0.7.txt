@@ -1,0 +1,45 @@
+OFFSCRPT V96.0.7 — FIRESTORE QUERY HOTFIX VALIDATION
+
+SOURCE
+- Base: OFFSCRPT V96.0.6 manual creator repayment build
+- Purpose: eliminate the two reported Firestore FAILED_PRECONDITION query failures on the product page.
+
+REPORTED FAILURES ADDRESSED
+1) commerceReviews query:
+   moderationStatus + productId + status + createdAt
+   FIX: public product review query now indexes on productId/status plus the selected sort field and
+        filters moderationStatus=approved server-side.
+
+2) commerceProducts query:
+   creatorId + status + visibility + updatedAt
+   FIX: creator trust query now indexes only creatorId + updatedAt and filters status/visibility server-side.
+
+ADDITIONAL HARDENING
+- Own-review lookup no longer requests reviewerId + productId + updatedAt composite.
+- Added reviewerId + createdAt index for review abuse-limit query.
+- Added reporterId + createdAt index for report abuse-limit query.
+- Retained exact Firebase-reported composites in firestore.indexes.json for compatibility with stale deployments.
+
+STATIC VALIDATION
+- V96 Trust validator: PASS — 68/68
+- Manual payout validator: PASS — 15/15
+- V95 Finance: PASS — 23/23
+- V94 Vendor/Payout: PASS — 34/34
+- V93 Commission: PASS — 35/35
+- V92 Creator/Route: PASS — 19/19
+- V89 Marketplace: PASS
+- Firestore rules: PASS
+- Firestore schema: PASS
+- Runtime patterns: PASS
+- Imports: PASS
+- Identifiers: PASS
+- Public profile: PASS
+- Deployment configuration: PASS
+- TypeScript/TSX transpile syntax: PASS — 163 files / 0 failures
+
+PRODUCTION BUILD
+- npm ci: ENVIRONMENT BLOCKED (transport timeout during dependency installation)
+- npm run build: NOT VERIFIED because the local vite dependency is unavailable after the blocked install.
+
+DEPLOYMENT REQUIREMENT
+Deploy the updated application/API and firestore.indexes.json. The code no longer depends on the two composites that caused the product-page failures, but deploying indexes is still recommended so all declared compatibility indexes exist in Firebase.
