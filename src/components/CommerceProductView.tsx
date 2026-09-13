@@ -189,9 +189,9 @@ export const CommerceProductView:React.FC<Props>=({productId,userProfile,onNavig
         <span className="text-black truncate max-w-[240px]">{product.title}</span>
       </nav>
       <button onClick={()=>onNavigate('shop')} className="border-2 border-black bg-white px-3 py-2 font-mono text-[9px] font-black uppercase inline-flex items-center gap-2 shadow-[3px_3px_0_#000]"><ArrowLeft className="w-3 h-3"/> BACK TO SHOP</button>
-      <div className="grid lg:grid-cols-[minmax(0,1.15fr)_420px] gap-6 mt-5 items-start">
-        <section className="order-2 lg:order-1 space-y-5">
-          <div className="border-4 border-black bg-white overflow-hidden shadow-[7px_7px_0_#000]">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_420px] gap-6 mt-5 items-start">
+        <section className="contents">
+          <div className="border-4 border-black bg-white overflow-hidden shadow-[7px_7px_0_#000] lg:col-start-1 lg:col-end-2">
             <div className="aspect-[4/3] sm:aspect-[5/4] bg-neutral-100 relative">
               {currentImage ? <>
                 <button type="button" className="w-full h-full block cursor-zoom-in" onClick={()=>{setLightboxOpen(true);recordMarketplaceEvent('product_gallery_open',productId,{source:'product-page'});}} aria-label="Open product image fullscreen">
@@ -205,28 +205,7 @@ export const CommerceProductView:React.FC<Props>=({productId,userProfile,onNavig
               </> : <div className="w-full h-full flex items-center justify-center"><ImageIcon className="w-12 h-12"/></div>}
             </div>
           </div>
-          {gallery.length>1&&<div className="grid grid-cols-5 sm:grid-cols-6 gap-2">
-            {gallery.map((url,index)=><button key={`${url}-${index}`} aria-label={`View image ${index+1}`} onClick={()=>{setActiveImage(index);recordMarketplaceEvent('product_gallery_open',productId,{index});}} className={`aspect-square border-2 border-black overflow-hidden bg-white ${index===activeImage?'ring-2 ring-offset-2 ring-black':''}`}><img src={url} alt="" className="w-full h-full object-cover"/></button>)}
-          </div>}
-          <article className="border-4 border-black bg-white p-5 sm:p-8 shadow-[7px_7px_0_#000]">
-            <div className="font-mono text-[9px] font-black text-neutral-500 uppercase">OFFSCRPT PRODUCT · {String(product.subtype||product.type).replaceAll('_',' ')}</div>
-            <h1 className="font-display font-black text-4xl sm:text-6xl uppercase leading-[.9] mt-2 break-words">{product.title}</h1>
-            {product.subtitle&&<p className="mt-3 font-mono text-xs sm:text-sm uppercase text-neutral-600">{product.subtitle}</p>}
-            <div className="mt-5 flex flex-wrap gap-2">
-              <span className="border-2 border-black px-3 py-2 font-mono text-[8px] font-black uppercase bg-[var(--color-primary)]">{product.currency}</span>
-              <span className="border-2 border-black px-3 py-2 font-mono text-[8px] font-black uppercase">DIGITAL PRODUCT</span>
-              {product.version&&<span className="border-2 border-black px-3 py-2 font-mono text-[8px] font-black uppercase">V{product.version}</span>}
-            </div>
-            <div className="mt-7 whitespace-pre-wrap text-sm sm:text-base leading-7">{product.description}</div>
-            {product.whatIsIncluded&&<div className="mt-8 border-t-4 border-black pt-5"><div className="font-mono text-[9px] font-black uppercase">WHAT'S INCLUDED</div><div className="mt-2 text-sm whitespace-pre-wrap">{String(product.whatIsIncluded)}</div></div>}
-            {product.requirements&&<div className="mt-8 border-t-4 border-black pt-5"><div className="font-mono text-[9px] font-black uppercase">REQUIREMENTS</div><div className="mt-2 text-sm whitespace-pre-wrap">{String(product.requirements)}</div></div>}
-            {product.usageRestrictions&&<div className="mt-8 border-t-4 border-black pt-5"><div className="font-mono text-[9px] font-black uppercase">LICENSE / USAGE</div><div className="mt-2 text-sm whitespace-pre-wrap">{String(product.usageRestrictions)}</div></div>}
-          </article>
-          {creator&&<section className="border-4 border-black bg-white p-5 shadow-[7px_7px_0_#000]"><div className="font-mono text-[9px] font-black uppercase text-neutral-500">CREATOR</div><button onClick={()=>onNavigate('creator',creator.username)} className="mt-3 w-full flex items-center gap-3 text-left"><div className="w-14 h-14 border-2 border-black bg-neutral-100 overflow-hidden shrink-0">{creator.photoURL?<img src={creator.photoURL} alt="" className="w-full h-full object-cover"/>:<UserRound className="w-full h-full p-3"/>}</div><div className="min-w-0"><div className="font-display font-black text-2xl uppercase truncate">{creator.displayName}</div><div className="font-mono text-[9px] text-neutral-500 uppercase">@{creator.username}</div></div><ExternalLink className="w-4 h-4 ml-auto"/></button></section>}
-          <ProductReviewsSection productId={productId} userProfile={userProfile}/>{creatorProducts.length>0&&<section><div className="font-mono text-[9px] font-black uppercase text-neutral-500 mb-2">FROM THIS CREATOR</div><h2 className="font-display font-black text-3xl uppercase mb-4">MORE FROM {creator?.displayName||'CREATOR'}</h2><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{creatorProducts.map(p=><MarketplaceProductCard key={p.id} product={p} price={creatorProductPrices[p.id]} onOpen={(id)=>{recordMarketplaceEvent('related_product_open',id,{source:'product-page'});onNavigate('product',id)}}/>)}</div></section>}
-          {related.length>0&&<section><div className="font-mono text-[9px] font-black uppercase text-neutral-500 mb-2">DISCOVERY</div><h2 className="font-display font-black text-3xl uppercase mb-4">RELATED PRODUCTS</h2><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{related.map(p=><MarketplaceProductCard key={p.id} product={p} price={relatedPrices[p.id]} owned={p.id===productId?owned:false} onOpen={(id)=>{recordMarketplaceEvent('related_product_open',id,{source:'product-page'});onNavigate('product',id)}}/>)}</div></section>}
-        </section>
-        <aside className="order-1 lg:order-2 border-4 border-black bg-white shadow-[7px_7px_0_#000] lg:sticky lg:top-24 overflow-hidden">
+        <aside className="border-4 border-black bg-white shadow-[7px_7px_0_#000] lg:sticky lg:top-24 lg:col-start-2 lg:col-end-3 lg:row-start-1 lg:row-span-7 overflow-hidden">
           <div className="p-5 sm:p-6">
             <div className="font-mono text-[9px] font-black uppercase text-neutral-500">BUY THIS PRODUCT</div>
             <div className="mt-2 text-4xl sm:text-5xl font-display font-black">{primaryPrice?money(primaryPrice.amount,primaryPrice.currency):'UNAVAILABLE'}</div>
@@ -242,6 +221,29 @@ export const CommerceProductView:React.FC<Props>=({productId,userProfile,onNavig
             <div className="mt-4 text-xs leading-5 text-neutral-600">Secure commerce access is confirmed server-side. Purchased digital files are available from My Purchases through the protected download flow.</div>
           </div>
         </aside>
+          {gallery.length>1&&<div className="grid grid-cols-5 sm:grid-cols-6 gap-2 lg:col-start-1 lg:col-end-2">
+            {gallery.map((url,index)=><button key={`${url}-${index}`} aria-label={`View image ${index+1}`} onClick={()=>{setActiveImage(index);recordMarketplaceEvent('product_gallery_open',productId,{index});}} className={`aspect-square border-2 border-black overflow-hidden bg-white ${index===activeImage?'ring-2 ring-offset-2 ring-black':''}`}><img src={url} alt="" className="w-full h-full object-cover"/></button>)}
+          </div>}
+
+          <article className="border-4 border-black bg-white p-5 sm:p-8 shadow-[7px_7px_0_#000] lg:col-start-1 lg:col-end-2">
+            <div className="font-mono text-[9px] font-black text-neutral-500 uppercase">OFFSCRPT PRODUCT · {String(product.subtype||product.type).replaceAll('_',' ')}</div>
+            <h1 className="font-display font-black text-4xl sm:text-6xl uppercase leading-[.9] mt-2 break-words">{product.title}</h1>
+            {product.subtitle&&<p className="mt-3 font-mono text-xs sm:text-sm uppercase text-neutral-600">{product.subtitle}</p>}
+            <div className="mt-5 flex flex-wrap gap-2">
+              <span className="border-2 border-black px-3 py-2 font-mono text-[8px] font-black uppercase bg-[var(--color-primary)]">{product.currency}</span>
+              <span className="border-2 border-black px-3 py-2 font-mono text-[8px] font-black uppercase">DIGITAL PRODUCT</span>
+              {product.version&&<span className="border-2 border-black px-3 py-2 font-mono text-[8px] font-black uppercase">V{product.version}</span>}
+            </div>
+            <div className="mt-7 whitespace-pre-wrap text-sm sm:text-base leading-7">{product.description}</div>
+            {product.whatIsIncluded&&<div className="mt-8 border-t-4 border-black pt-5"><div className="font-mono text-[9px] font-black uppercase">WHAT'S INCLUDED</div><div className="mt-2 text-sm whitespace-pre-wrap">{String(product.whatIsIncluded)}</div></div>}
+            {product.requirements&&<div className="mt-8 border-t-4 border-black pt-5"><div className="font-mono text-[9px] font-black uppercase">REQUIREMENTS</div><div className="mt-2 text-sm whitespace-pre-wrap">{String(product.requirements)}</div></div>}
+            {product.usageRestrictions&&<div className="mt-8 border-t-4 border-black pt-5"><div className="font-mono text-[9px] font-black uppercase">LICENSE / USAGE</div><div className="mt-2 text-sm whitespace-pre-wrap">{String(product.usageRestrictions)}</div></div>}
+          </article>
+          {creator&&<section className="border-4 border-black bg-white p-5 shadow-[7px_7px_0_#000] lg:col-start-1 lg:col-end-2"><div className="font-mono text-[9px] font-black uppercase text-neutral-500">CREATOR</div><button onClick={()=>onNavigate('creator',creator.username)} className="mt-3 w-full flex items-center gap-3 text-left"><div className="w-14 h-14 border-2 border-black bg-neutral-100 overflow-hidden shrink-0">{creator.photoURL?<img src={creator.photoURL} alt="" className="w-full h-full object-cover"/>:<UserRound className="w-full h-full p-3"/>}</div><div className="min-w-0"><div className="font-display font-black text-2xl uppercase truncate">{creator.displayName}</div><div className="font-mono text-[9px] text-neutral-500 uppercase">@{creator.username}</div></div><ExternalLink className="w-4 h-4 ml-auto"/></button></section>}
+          <div className="lg:col-start-1 lg:col-end-2"><ProductReviewsSection productId={productId} userProfile={userProfile}/></div>{creatorProducts.length>0&&<section className="lg:col-start-1 lg:col-end-2"><div className="font-mono text-[9px] font-black uppercase text-neutral-500 mb-2">FROM THIS CREATOR</div><h2 className="font-display font-black text-3xl uppercase mb-4">MORE FROM {creator?.displayName||'CREATOR'}</h2><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{creatorProducts.map(p=><MarketplaceProductCard key={p.id} product={p} price={creatorProductPrices[p.id]} onOpen={(id)=>{recordMarketplaceEvent('related_product_open',id,{source:'product-page'});onNavigate('product',id)}}/>)}</div></section>}
+          {related.length>0&&<section className="lg:col-start-1 lg:col-end-2"><div className="font-mono text-[9px] font-black uppercase text-neutral-500 mb-2">DISCOVERY</div><h2 className="font-display font-black text-3xl uppercase mb-4">RELATED PRODUCTS</h2><div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{related.map(p=><MarketplaceProductCard key={p.id} product={p} price={relatedPrices[p.id]} owned={p.id===productId?owned:false} onOpen={(id)=>{recordMarketplaceEvent('related_product_open',id,{source:'product-page'});onNavigate('product',id)}}/>)}</div></section>}
+        </section>
+
       </div>
     </div>
     {lightboxOpen && currentImage && <div className="fixed inset-0 z-[500] bg-black/90 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Product image viewer" onClick={()=>setLightboxOpen(false)}>

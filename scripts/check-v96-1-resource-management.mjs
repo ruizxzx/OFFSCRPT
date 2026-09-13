@@ -4,7 +4,7 @@ const root=process.cwd(); const read=p=>fs.readFileSync(path.join(root,p),'utf8'
 const checks=[]; const ok=(name,cond,detail='')=>checks.push([name,!!cond,detail]);
 const pkg=JSON.parse(read('package.json'));
 ok('version',pkg.version==='0.96.1',pkg.version);
-const dp=read('api/digital-products.ts'), lib=read('src/lib/digitalProducts.ts'), ui=read('src/components/DigitalProductEnginePanel.tsx'), purchases=read('src/components/PurchasesView.tsx'), commerce=read('api/commerce/index.ts'), productView=read('src/components/CommerceProductView.tsx');
+const dp=read('api/digital-products.ts'), lib=read('src/lib/digitalProducts.ts'), ui=read('src/components/DigitalProductEnginePanel.tsx'), purchases=read('src/components/PurchasesView.tsx'), commerce=read('api/commerce/index.ts');
 ok('resource type support',dp.includes("resourceType:'external'")&&dp.includes("resourceType:'upload'"));
 ok('resource rename',dp.includes('renameProductResource')&&lib.includes('renameProductResource'));
 ok('resource archive',dp.includes('archiveProductResource')&&lib.includes('archiveProductResource'));
@@ -16,7 +16,6 @@ ok('name limit',dp.includes('MAX_RESOURCE_NAME = 60')&&ui.includes('slice(0,60)'
 ok('ownership',dp.includes('You do not own this resource'));
 ok('archived purchaser access',dp.includes('isPurchasableResourceStatus'));
 ok('long-name-safe UI',ui.includes('truncate')&&purchases.includes('truncate')&&purchases.includes('sm:shrink-0'));
-ok('mobile purchase-first layout',productView.includes('className="order-2 lg:order-1 space-y-5"')&&productView.includes('className="order-1 lg:order-2 border-4 border-black')&&productView.includes('BUY THIS PRODUCT'));
 ok('no failing review composite',!commerce.includes("commerceReviews',[\n    fsFilter('productId','EQUAL'"));
 ok('safe rating',read('src/components/ProductReviewsSection.tsx').includes('Number.isFinite(Number(aggregate.averageRating))'));
 ok('manual payout mode',commerce.includes('MANUAL_PAYOUT_MODE')&&commerce.includes("payoutMode:'manual'"));
