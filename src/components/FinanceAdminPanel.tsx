@@ -34,7 +34,7 @@ export const FinanceAdminPanel:React.FC=()=>{
       ].map(([k,v])=><div key={k} className="border-2 border-black bg-white p-4"><div className="font-mono text-[8px] font-black uppercase">{k}</div><div className="font-display text-xl md:text-2xl font-black mt-2">{v}</div></div>)}</div>
       <div className="grid md:grid-cols-3 gap-3">
         <div className="border-2 border-black bg-white p-4"><div className="font-mono text-[8px] font-black">PAID ORDERS</div><div className="font-display text-3xl font-black">{s.paidOrders.toLocaleString()}</div><div className="font-mono text-[8px] mt-1">AOV {money(s.averageOrderValuePaise)}</div></div>
-        <div className="border-2 border-black bg-white p-4"><div className="font-mono text-[8px] font-black">REFUND RATE</div><div className="font-display text-3xl font-black">{s.refundRate.toFixed(2)}%</div><div className="font-mono text-[8px] mt-1">Refund count {s.refundCount}</div></div>
+        <div className="border-2 border-black bg-white p-4"><div className="font-mono text-[8px] font-black">REFUND RATE</div><div className="font-display text-3xl font-black">{(Number.isFinite(Number(s.refundRate))?Number(s.refundRate):0).toFixed(2)}%</div><div className="font-mono text-[8px] mt-1">Refund count {s.refundCount}</div></div>
         <div className="border-2 border-black bg-white p-4"><div className="font-mono text-[8px] font-black">PERIOD CHANGE</div><div className="font-display text-3xl font-black flex items-center gap-2">{(report.comparison.grossSales??0)>=0?<TrendingUp className="w-6 h-6"/>:<TrendingDown className="w-6 h-6"/>}{pct(report.comparison.grossSales)}</div><div className="font-mono text-[8px] mt-1">vs previous period</div></div>
       </div>
       <div className="border-2 border-black bg-white p-5">

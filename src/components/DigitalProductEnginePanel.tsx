@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, CheckCircle2, ChevronRight, FileArchive, FileText, FolderOpen, History, Image, Loader2, PackagePlus, Pencil, Plus, Save, ShieldCheck, UploadCloud, XCircle } from 'lucide-react';
+import { Archive, CheckCircle2, ChevronRight, FileArchive, FileText, FolderOpen, History, Image, Link as LinkIcon, Loader2, PackagePlus, Pencil, Plus, Save, ShieldCheck, UploadCloud, XCircle } from 'lucide-react';
 import type { CommunityUser } from '../types';
 import {
-  archiveDigitalProduct, createDigitalProduct, createDigitalProductVersion,
+  addProductLink, archiveDigitalProduct, archiveProductResource, createDigitalProduct, createDigitalProductVersion,
   listMyDigitalProducts, publishDigitalProduct, publishDigitalProductVersion,
-  updateDigitalProduct, uploadDigitalProductFile,
+  renameProductResource, restoreProductResource, updateDigitalProduct, updateProductLink, uploadDigitalProductFile,
   type DigitalProduct, type DigitalProductFile, type DigitalProductSubtype, type DigitalProductVersion, type DigitalProductVisibility
 } from '../lib/digitalProducts';
 import { notifyToast } from '../lib/toast';
@@ -22,7 +22,7 @@ const SUBTYPES: Array<[DigitalProductSubtype,string]> = [
 const LICENSES=[['personal','Personal'],['commercial','Commercial'],['extended_commercial','Extended Commercial'],['educational','Educational'],['team','Team']];
 
 const money=(amount:number,currency:string)=>new Intl.NumberFormat(undefined,{style:'currency',currency}).format((Number(amount)||0)/100);
-const sizeLabel=(bytes:number)=>bytes<1024?`${bytes} B`:bytes<1024*1024?`${(bytes/1024).toFixed(1)} KB`:`${(bytes/1024/1024).toFixed(1)} MB`;
+const sizeLabel=(bytes:number)=>{const n=Number(bytes); if(!Number.isFinite(n)||n<=0)return 'SIZE UNKNOWN'; return n<1024?`${Math.round(n)} B`:n<1024*1024?`${(n/1024).toFixed(1)} KB`:`${(n/1024/1024).toFixed(1)} MB`;};
 
 export const DigitalProductEnginePanel:React.FC<Props>=({userProfile})=>{
   const [products,setProducts]=useState<DigitalProduct[]>([]);
@@ -41,6 +41,8 @@ export const DigitalProductEnginePanel:React.FC<Props>=({userProfile})=>{
     visibility:'public' as DigitalProductVisibility
   });
   const [versionForm,setVersionForm]=useState({label:'1.0',changelog:''});
+  const [linkForm,setLinkForm]=useState({name:'',url:''});
+  const [showLinkForm,setShowLinkForm]=useState(false);
   const autosaveTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
 
   const selected=useMemo(()=>products.find(p=>p.id===selectedId)||null,[products,selectedId]);
@@ -150,6 +152,31 @@ export const DigitalProductEnginePanel:React.FC<Props>=({userProfile})=>{
       setSelectedVersionId(result.version.id);
     }catch(e:any){notifyToast(e?.message||'Could not create version.','error');}
     finally{setBusy(false);}
+  };
+
+  const updateResourceLocal=(resource:DigitalProductFile)=>{setFiles(prev=>prev.map(f=>f.id===resource.id?{...f,...resource}:f));};
+  const renameResource=async(resource:DigitalProductFile)=>{
+    const next=window.prompt(`RENAME RESOURCE (MAX 60 CHARACTERS)`,String(resource.displayName||resource.originalFilename||'').slice(0,60));
+    if(next===null)return;
+    const name=next.trim(); if(!name||name.length>60){notifyToast('Resource name must contain 1–60 characters.','error');return;}
+    setBusy(true); try{const r=await renameProductResource(resource.id,name);updateResourceLocal(r.resource);notifyToast('Resource renamed.','success');}catch(e:any){notifyToast(e?.message||'Could not rename resource.','error');}finally{setBusy(false);}
+  };
+  const toggleResourceArchive=async(resource:DigitalProductFile)=>{
+    const archived=resource.status==='archived';
+    if(!archived&&!window.confirm(`Archive "${resource.displayName||resource.originalFilename||'resource'}"? Existing purchase history will be preserved.`))return;
+    setBusy(true); try{const r=archived?await restoreProductResource(resource.id):await archiveProductResource(resource.id);updateResourceLocal(r.resource);await refresh(selected?.id);setSelectedVersionId(selected?.currentVersionId||selectedVersionId);notifyToast(archived?'Resource restored.':'Resource archived.','success');}catch(e:any){notifyToast(e?.message||(archived?'Could not restore resource.':'Could not archive resource.'),'error');}finally{setBusy(false);}
+  };
+  const editLink=async(resource:DigitalProductFile)=>{
+    const name=window.prompt('RESOURCE NAME (MAX 60 CHARACTERS)',String(resource.displayName||'').slice(0,60)); if(name===null)return;
+    const trimmed=name.trim(); if(!trimmed||trimmed.length>60){notifyToast('Resource name must contain 1–60 characters.','error');return;}
+    const url=window.prompt('HTTPS RESOURCE URL',String(resource.url||'')); if(url===null)return;
+    setBusy(true); try{const r=await updateProductLink({resourceId:resource.id,displayName:trimmed,url});updateResourceLocal(r.resource);notifyToast('Link updated.','success');}catch(e:any){notifyToast(e?.message||'Could not update link.','error');}finally{setBusy(false);}
+  };
+  const addLink=async()=>{
+    if(!selected||!selectedVersion)return; const name=linkForm.name.trim(),url=linkForm.url.trim();
+    if(!name||name.length>60){notifyToast('Resource name must contain 1–60 characters.','error');return;}
+    if(!url){notifyToast('Enter an HTTPS resource URL.','error');return;}
+    setBusy(true); try{const r=await addProductLink({productId:selected.id,versionId:selectedVersion.id,displayName:name,url});setFiles(prev=>[r.resource,...prev]);setLinkForm({name:'',url:''});setShowLinkForm(false);notifyToast('External resource added.','success');}catch(e:any){notifyToast(e?.message||'Could not add external resource.','error');}finally{setBusy(false);}
   };
 
   const upload=async(e:React.ChangeEvent<HTMLInputElement>)=>{
@@ -347,7 +374,8 @@ export const DigitalProductEnginePanel:React.FC<Props>=({userProfile})=>{
             </div>
 
             <div className="border-2 border-black bg-white p-5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-display font-black uppercase text-xl">Protected product files</div><div className="font-mono text-[8px]">V{selectedVersion?.versionLabel||'?'} · {selectedFiles.length} FILES</div></div><label className="border-2 border-black bg-[var(--color-primary)] px-3 py-2 font-mono text-[9px] font-black uppercase cursor-pointer"><UploadCloud className="inline w-3 h-3"/> ADD PRODUCT FILES<input type="file" multiple className="hidden" onChange={upload} disabled={busy}/></label></div>
+              <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-display font-black uppercase text-xl">PRODUCT RESOURCES</div><div className="font-mono text-[8px]">V{selectedVersion?.versionLabel||'?'} · {selectedFiles.filter(f=>String(f.resourceType||'upload')==='upload').length} FILES · {selectedFiles.filter(f=>String(f.resourceType||'')==='external').length} LINKS</div></div><div className="flex flex-wrap gap-2"><label className="border-2 border-black bg-[var(--color-primary)] px-3 py-2 font-mono text-[9px] font-black uppercase cursor-pointer"><UploadCloud className="inline w-3 h-3"/> ADD FILE<input type="file" multiple className="hidden" onChange={upload} disabled={busy}/></label><button type="button" onClick={()=>setShowLinkForm(v=>!v)} disabled={busy} className="border-2 border-black bg-white px-3 py-2 font-mono text-[9px] font-black uppercase"><LinkIcon className="inline w-3 h-3"/> ADD LINK</button></div></div>
+              {showLinkForm&&<div className="border-2 border-black bg-neutral-50 p-3 grid gap-2"><input value={linkForm.name} maxLength={60} onChange={e=>setLinkForm(v=>({...v,name:e.target.value.slice(0,60)}))} placeholder="Resource name (max 60 chars)" className="border-2 border-black p-3 font-mono text-[10px]"/><div className="font-mono text-[8px] text-neutral-500 text-right">{linkForm.name.length}/60</div><input value={linkForm.url} onChange={e=>setLinkForm(v=>({...v,url:e.target.value}))} placeholder="https://drive.google.com/..." className="border-2 border-black p-3 font-mono text-[10px]"/><div className="flex gap-2"><button type="button" disabled={busy} onClick={()=>void addLink()} className="border-2 border-black bg-[var(--color-primary)] px-4 py-2 font-mono text-[9px] font-black uppercase">SAVE LINK</button><button type="button" disabled={busy} onClick={()=>{setShowLinkForm(false);setLinkForm({name:'',url:''});}} className="border-2 border-black px-4 py-2 font-mono text-[9px] font-black uppercase">CANCEL</button></div></div>}
               {!selectedVersion ? (
                 <div className="border-2 border-dashed border-black p-5 font-mono text-xs">SELECT A VERSION.</div>
               ) : selectedFiles.length === 0 ? (
@@ -357,18 +385,13 @@ export const DigitalProductEnginePanel:React.FC<Props>=({userProfile})=>{
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {selectedFiles.map(f => (
-                    <div key={f.id} className="border-2 border-black p-3 flex items-center justify-between gap-3">
-                      <div className="min-w-0 flex items-center gap-2">
-                        {f.mimeType.includes('image') ? <Image className="w-4 h-4 shrink-0"/> : f.mimeType.includes('zip') ? <FileArchive className="w-4 h-4 shrink-0"/> : <FileText className="w-4 h-4 shrink-0"/>}
-                        <div className="min-w-0">
-                          <div className="font-mono text-[10px] font-black truncate">{f.originalFilename}</div>
-                          <div className="font-mono text-[8px]">{f.mimeType} · {sizeLabel(f.sizeBytes)} · {f.status.toUpperCase()}</div>
-                        </div>
+                  {selectedFiles.map(f => { const external=String(f.resourceType||'upload')==='external'; const archived=f.status==='archived'; return <div key={f.id} className="border-2 border-black p-3 flex flex-col sm:flex-row sm:items-center gap-3 overflow-hidden">
+                      <div className="min-w-0 flex-1 flex items-center gap-2">
+                        {external ? <LinkIcon className="w-4 h-4 shrink-0"/> : f.mimeType?.includes('image') ? <Image className="w-4 h-4 shrink-0"/> : f.mimeType?.includes('zip') ? <FileArchive className="w-4 h-4 shrink-0"/> : <FileText className="w-4 h-4 shrink-0"/>}
+                        <div className="min-w-0 flex-1"><div title={String(f.displayName||f.originalFilename||'Resource')} className="font-mono text-[10px] font-black truncate">{f.displayName||f.originalFilename||'Resource'}</div><div className="font-mono text-[8px] uppercase truncate">{external ? `${f.provider||'external'} · external resource` : `${f.mimeType||'file'} · ${sizeLabel(Number(f.sizeBytes||0))}`} · {f.status.toUpperCase()}</div></div>
                       </div>
-                      <ShieldCheck className={`w-4 h-4 shrink-0 ${f.status==='ready' ? '' : 'opacity-40'}`}/>
-                    </div>
-                  ))}
+                      <div className="flex flex-wrap gap-2 shrink-0"><button type="button" disabled={busy} onClick={()=>void (external?editLink(f):renameResource(f))} className="border-2 border-black px-2 py-2 font-mono text-[8px] font-black uppercase"><Pencil className="inline w-3 h-3"/> {external?'EDIT LINK':'RENAME'}</button><button type="button" disabled={busy} onClick={()=>void toggleResourceArchive(f)} className={`border-2 border-black px-2 py-2 font-mono text-[8px] font-black uppercase ${archived?'bg-[var(--color-primary)]':'bg-white'}`}>{archived?'RESTORE':'ARCHIVE'}</button><ShieldCheck className={`w-4 h-4 self-center ${f.status==='ready' ? '' : 'opacity-40'}`}/></div>
+                    </div>; })}
                 </div>
               )}
               {Object.entries(progress).filter(([,n]:[string,number])=>n<100).map(([k,n]:[string,number])=><div key={k} className="border-2 border-black p-2"><div className="font-mono text-[8px] truncate">{k}</div><div className="h-2 border-2 border-black mt-1"><div className="h-full bg-[var(--color-primary)]" style={{width:`${n}%`}}/></div></div>)}

@@ -4,7 +4,7 @@ const root=process.cwd();
 const read=(p)=>fs.readFileSync(path.join(root,p),'utf8');
 const checks=[]; const ok=(name,cond)=>checks.push([name,!!cond]);
 const pkg=JSON.parse(read('package.json')); const api=read('api/commerce/index.ts'); const rules=read('firestore.rules'); const lib=read('src/lib/commerce.ts'); const indexes=read('firestore.indexes.json');
-ok('version 0.96.9',pkg.version==='0.96.9');
+ok('version 0.96.1+',/^0\.96\.(?:[1-9]|[1-9][0-9]+)$/.test(pkg.version));
 ok('manual payout mode',api.includes('MANUAL_PAYOUT_MODE')&&api.includes('MANUAL_PAYOUT_METHOD')&&api.includes("const MANUAL_PAYOUT_METHOD = 'manual_upi';"));
 ok('manual payout API',api.includes("action==='markPayoutPaid'")&&api.includes('manualPaymentReference'));
 ok('Route disabled for new payouts',api.includes("ROUTE_DISABLED")&&api.includes('Razorpay Route transfers are disabled'));

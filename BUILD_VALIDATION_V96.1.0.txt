@@ -1,0 +1,60 @@
+OFFSCRPT V96.1.0 — BUILD VALIDATION REPORT
+
+Baseline: OFFSCRPT V96.0.9
+Target: V96.1.0
+
+IMPLEMENTED
+- Firestore query/index hardening for product reviews, review eligibility, my reviews, creator balance, creator payouts, and affected creator/product lookups.
+- Product-page optional data failure isolation.
+- NaN/undefined-safe rating and finance formatting in affected UI paths.
+- Public identity reads use public profile paths rather than private users/{uid} reads.
+- Admin notification subscription is role-gated.
+- Product resource model distinguishes uploaded files from external links.
+- Creator resource rename/archive/restore.
+- Creator external link add/edit/archive/restore.
+- 60-character server-side resource display-name limit.
+- Protected purchaser-only external-resource opening.
+- Existing purchaser archive entitlement policy.
+- Resource ownership validation and audit logging.
+- Responsive long-name-safe resource cards.
+- Manual creator payout mode preserved; Razorpay Route is not used for new payout flow.
+- V90–V96 compatibility retained.
+
+VALIDATION
+- Custom TS/TSX/JS/MJS syntax scan: PASS — 212 files, 0 diagnostics.
+- Project syntax check: PASS — 143 active TS/TSX files.
+- Import check: PASS.
+- Export check: PASS.
+- Identifier check: PASS.
+- Firebase check: PASS.
+- Firestore rules check: PASS.
+- Firestore schema check: PASS.
+- Runtime pattern check: PASS.
+- Public profile check: PASS.
+- Deployment configuration check: PASS.
+- Commerce check: PASS.
+- Recommendation check: PASS.
+- Handle/identity/site/comment checks: PASS.
+- V80/V81/V81 navigation checks: PASS.
+- V87 storefront check: PASS.
+- V88.0.7 signing check: PASS.
+- V89 marketplace check: PASS.
+- V90 Razorpay compatibility check: PASS.
+- V92 creator/Route compatibility check: PASS — 19/19.
+- V93 commission check: PASS — 35/35.
+- V94 vendor/payout check: PASS — 34/34.
+- V95 finance check: PASS — 23/23.
+- V96 trust check: PASS — 68/68.
+- V96 manual payout check: PASS — 15/15.
+- V96.0.9 baseline hotfix compatibility: PASS — 14/14.
+- V96.1 resource-management check: PASS — 17/17.
+- Migration script syntax: PASS.
+
+ENVIRONMENT-BLOCKED VALIDATION
+- npm ci --no-audit --no-fund: blocked/timed out in the execution environment before dependency completion.
+- npm run typecheck: blocked by incomplete dependency/type-definition installation.
+- npm run build: not independently verified because Vite dependencies were not fully installed.
+- Live Firebase / Vercel / Razorpay runtime verification: not possible from this isolated build environment.
+
+NOTE
+The archive does not include node_modules, dist, or .git. No claim of a successful dependency-backed production bundle is made.

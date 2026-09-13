@@ -127,10 +127,32 @@ async function fsRunQueryAll(token:string,from:string,filters:any[] = [],orderBy
 // Equality-only bulk reads intentionally omit orderBy so they work without any composite index.
 // Callers sort/filter the bounded result server-side. This is used on public/creator screens where
 // a missing Firestore deployment index must not turn into a blocking 400 popup.
+function v96DecodeFilterValue(encoded:any){
+  if(encoded && 'stringValue' in encoded) return encoded.stringValue;
+  if(encoded && 'integerValue' in encoded) return Number(encoded.integerValue);
+  if(encoded && 'doubleValue' in encoded) return Number(encoded.doubleValue);
+  if(encoded && 'booleanValue' in encoded) return encoded.booleanValue;
+  if(encoded && 'nullValue' in encoded) return null;
+  return undefined;
+}
+function v96MatchesFilter(row:any,filter:any){
+  const actual=v96Fields(row)?.[String(filter.field?.fieldPath||'')];
+  const expected=v96DecodeFilterValue(filter.value);
+  switch(String(filter.op||'')){
+    case 'EQUAL': return String(actual??'')===String(expected??'');
+    case 'NOT_EQUAL': return String(actual??'')!==String(expected??'');
+    default: return true;
+  }
+}
 async function fsRunQueryAllUnordered(token:string,from:string,filters:any[]=[],limitCount=500){
   const safeLimit=Math.max(1,Math.min(500,Number(limitCount)||500));
-  const rows=await fsRunQueryAdvanced(token,from,filters,{limit:safeLimit});
-  return rows;
+  // Multiple equality filters are intentionally reduced to one Firestore filter,
+  // then the remaining predicates are evaluated server-side. This avoids creating
+  // hidden composite-index dependencies in affected marketplace paths.
+  const equalityOnly=filters.length>1 && filters.every(f=>String(f?.op||'')==='EQUAL');
+  const queryFilters=equalityOnly?filters.slice(0,1):filters;
+  const rows=await fsRunQueryAdvanced(token,from,queryFilters,{limit:safeLimit});
+  return equalityOnly?rows.filter(row=>filters.slice(1).every(f=>v96MatchesFilter(row,f))):rows;
 }
 
 function v95Iso(value:any){
@@ -1537,10 +1559,7 @@ async function v96ListPublicReviews(token:string,productId:string,params:any){
   // Query only the equality fields (which use Firestore single-field indexes), then
   // apply the public moderation filter, stable sorting, and cursor slicing in the
   // server. This keeps public product pages functional even before indexes are deployed.
-  const rows=await fsRunQueryAllUnordered(token,'commerceReviews',[
-    fsFilter('productId','EQUAL',{stringValue:productId}),
-    fsFilter('status','EQUAL',{stringValue:'published'})
-  ],500);
+  const rows=await fsRunQueryAllUnordered(token,'commerceReviews',[fsFilter('productId','EQUAL',{stringValue:productId})],500);
   const publicRows=rows.filter(r=>v96ReviewIsPublic(v96Fields(r)));
   publicRows.sort((a,b)=>{
     const af=v96Fields(a), bf=v96Fields(b);

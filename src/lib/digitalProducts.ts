@@ -26,10 +26,10 @@ export interface DigitalProductVersion {
 }
 
 export interface DigitalProductFile {
-  id:string; productId:string; versionId:string; creatorId:string; originalFilename:string;
-  safeFilename:string; mimeType:string; sizeBytes:number; checksum?:string; checksumSource?:string;
-  role:'preview'|'cover'|'product_file'|'documentation'; status:'pending'|'processing'|'ready'|'failed'|'rejected'|'deleted';
-  objectKey:string; createdAt?:string; updatedAt?:string;
+  id:string; productId:string; versionId:string; creatorId:string; resourceType?:'upload'|'external'; displayName?:string;
+  originalFilename:string; safeFilename:string; mimeType?:string; sizeBytes?:number; checksum?:string; checksumSource?:string;
+  role?:'preview'|'cover'|'product_file'|'documentation'; status:'pending'|'processing'|'ready'|'failed'|'rejected'|'deleted'|'archived';
+  objectKey?:string; url?:string; provider?:'google_drive'|'dropbox'|'notion'|'github'|'other'; createdAt?:string; updatedAt?:string; archivedAt?:string|null;
 }
 
 const endpoint='/api/digital-products';
@@ -76,6 +76,11 @@ export async function uploadDigitalProductFile(
   input.onProgress?.(100);
   return result;
 }
+export async function addProductLink(input:{productId:string;versionId:string;displayName:string;url:string;provider?:string}){return api<{resource:DigitalProductFile}>('addProductLink',input);}
+export async function renameProductResource(resourceId:string,displayName:string){return api<{resource:DigitalProductFile}>('renameProductResource',{resourceId,displayName});}
+export async function updateProductLink(input:{resourceId:string;displayName:string;url:string;provider?:string}){return api<{resource:DigitalProductFile}>('updateProductLink',input);}
+export async function archiveProductResource(resourceId:string){return api<{resource:DigitalProductFile}>('archiveProductResource',{resourceId});}
+export async function restoreProductResource(resourceId:string){return api<{resource:DigitalProductFile}>('restoreProductResource',{resourceId});}
 export async function listMyDigitalProducts(){
   return api<{products:DigitalProduct[];versions:DigitalProductVersion[];files:DigitalProductFile[]}>('listMine');
 }
@@ -85,8 +90,8 @@ export async function archiveDigitalProduct(productId:string){return api<{produc
 
 
 export interface PurchasedDigitalProductFile {
-  id:string; productId:string; versionId:string; originalFilename:string; safeFilename:string;
-  mimeType:string; sizeBytes:number; role:DigitalProductFile['role']; status:DigitalProductFile['status'];
+  id:string; productId:string; versionId:string; resourceType?:'upload'|'external'; displayName?:string; originalFilename:string; safeFilename:string;
+  mimeType?:string; sizeBytes?:number; role?:DigitalProductFile['role']; status:DigitalProductFile['status']; url?:string; provider?:DigitalProductFile['provider']; archivedAt?:string|null;
 }
 export interface DigitalPurchase {
   id:string; entitlementId:string; orderId:string; purchasedAt?:string; entitlementStatus:string; canDownload:boolean;
@@ -98,6 +103,7 @@ export interface DigitalPurchase {
 export async function listMyDigitalPurchases(){
   return api<{purchases:DigitalPurchase[]}>('listPurchases');
 }
+export async function openMyDigitalExternalResource(resourceId:string){return api<{url:string;expiresIn:number;resource:DigitalProductFile}>('openExternalResource',{resourceId});}
 export async function downloadMyDigitalProductFile(fileId:string){
   return api<{downloadUrl:string;expiresIn:number;file:{id:string;filename:string;mimeType:string;sizeBytes:number;productId:string}}>('downloadFile',{fileId});
 }

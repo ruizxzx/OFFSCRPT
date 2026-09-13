@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "0.96.9",
+  "version": "0.96.1",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
@@ -19,7 +19,7 @@
     "check:schema": "node scripts/check-schema.mjs",
     "check:runtime": "node scripts/check-runtime-patterns.mjs",
     "health:deployment": "node scripts/deployment-health.mjs",
-    "verify": "npm run check:deployment-config && npm run check:commerce && npm run typecheck && npm run build && npm run check:syntax && npm run check:imports && npm run check:exports && npm run check:identifiers && npm run check:firebase && npm run check:rules && npm run check:schema && npm run check:runtime && npm run check:recommendations && npm run check:handles && npm run check:handle-propagation && npm run check:identity-sync && npm run check:public-profile && npm run check:comments && npm run check:site-sync && npm run check:v80 && npm run check:v81 && npm run check:v81-navigation && npm run check:v87-storefront && npm run check:v88-07 && npm run check:v89-marketplace && npm run check:v90-razorpay-payments && npm run check:v92-creator-razorpay-route && npm run check:v93-commission-engine && npm run check:v94-vendor-payouts && npm run check:v95-finance && npm run check:v96-trust && npm run check:v96-manual-payouts",
+    "verify": "npm run check:deployment-config && npm run check:commerce && npm run typecheck && npm run build && npm run check:syntax && npm run check:imports && npm run check:exports && npm run check:identifiers && npm run check:firebase && npm run check:rules && npm run check:schema && npm run check:runtime && npm run check:recommendations && npm run check:handles && npm run check:handle-propagation && npm run check:identity-sync && npm run check:public-profile && npm run check:comments && npm run check:site-sync && npm run check:v80 && npm run check:v81 && npm run check:v81-navigation && npm run check:v87-storefront && npm run check:v88-07 && npm run check:v89-marketplace && npm run check:v90-razorpay-payments && npm run check:v92-creator-razorpay-route && npm run check:v93-commission-engine && npm run check:v94-vendor-payouts && npm run check:v95-finance && npm run check:v96-trust && npm run check:v96-manual-payouts && npm run check:v96-09-hotfix && npm run check:v96-1-resource-management",
     "check:deployment-config": "node scripts/check-deployment-config.mjs",
     "check:recommendations": "node scripts/check-recommendations.mjs",
     "check:handles": "node scripts/check-handles.mjs",
@@ -50,7 +50,10 @@
     "check:v95-finance": "node scripts/check-v95-finance.mjs",
     "check:v96-trust": "node scripts/check-v96-trust.mjs",
     "backfill:v96-review-aggregates": "node scripts/backfill-v96-review-aggregates.mjs",
-    "check:v96-manual-payouts": "node scripts/check-v96-manual-payouts.mjs"
+    "check:v96-manual-payouts": "node scripts/check-v96-manual-payouts.mjs",
+    "check:v96-1-resource-management": "node scripts/check-v96-1-resource-management.mjs",
+    "migrate:v96-1-product-resources": "node scripts/migrate-v96-1-product-resources.mjs",
+    "check:v96-09-hotfix": "node scripts/check-v96-09-hotfix.mjs"
   },
   "dependencies": {
     "@sanity/client": "^8.5.0",

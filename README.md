@@ -1,5 +1,6 @@
-# OFFSCRPT V96.0.9 — Runtime Hotfix
+# OFFSCRPT V96.1.0 — Product Resource Management + Firestore Stability
 
+This release hardens the V96 marketplace trust/payout stack and adds safe creator-managed product resources.
 
 # OFFSCRPT V96.0.7 — MANUAL CREATOR PAYOUTS
 

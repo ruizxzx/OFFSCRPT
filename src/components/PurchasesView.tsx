@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { CheckCircle2, Download, ExternalLink, FileText, Loader2, Package, RefreshCw, ShieldCheck } from 'lucide-react';
 import { useAuthUser } from '../lib/useAuthUser';
 import { loginWithGoogle } from '../lib/firebase';
-import { downloadMyDigitalProductFile, listMyDigitalPurchases, type DigitalPurchase, type PurchasedDigitalProductFile } from '../lib/digitalProducts';
+import { downloadMyDigitalProductFile, listMyDigitalPurchases, openMyDigitalExternalResource, type DigitalPurchase, type PurchasedDigitalProductFile } from '../lib/digitalProducts';
 import type { PageView } from '../types';
 import { notifyToast } from '../lib/toast';
 
@@ -13,28 +13,21 @@ const money = (amount:number,currency:string) => {
   catch { return `${currency} ${((Number(amount)||0)/100).toFixed(2)}`; }
 };
 const dateLabel = (value?:string) => value ? new Date(value).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : 'RECENT PURCHASE';
-const sizeLabel = (bytes:number) => bytes < 1024*1024 ? `${Math.max(1,Math.round(bytes/1024))} KB` : `${(bytes/(1024*1024)).toFixed(1)} MB`;
+const sizeLabel = (bytes:number) => { const n=Number(bytes); if(!Number.isFinite(n)||n<=0) return 'SIZE UNKNOWN'; return n < 1024*1024 ? `${Math.max(1,Math.round(n/1024))} KB` : `${(n/(1024*1024)).toFixed(1)} MB`; };
 const previewImage = (purchase:DigitalPurchase) => purchase.product.thumbnail || purchase.product.gallery?.[0] || '';
 
 const FileRow:React.FC<{file:PurchasedDigitalProductFile;disabled?:boolean}> = ({file,disabled}) => {
-  const [loading,setLoading] = useState(false);
-  const handleDownload = async () => {
-    if (disabled || loading) return;
-    setLoading(true);
-    try {
-      const result=await downloadMyDigitalProductFile(file.id);
-      window.location.assign(result.downloadUrl);
-    } catch (error) {
-      notifyToast(error instanceof Error ? error.message : 'Download could not be started.','error');
-    } finally { setLoading(false); }
+  const [loading,setLoading]=useState(false); const external=String(file.resourceType||'upload')==='external';
+  const handleAction = async () => {
+    if(disabled||loading)return; setLoading(true);
+    try{ if(external){const result=await openMyDigitalExternalResource(file.id); window.open(result.url,'_blank','noopener,noreferrer');} else {const result=await downloadMyDigitalProductFile(file.id); window.location.assign(result.downloadUrl);} }
+    catch(error){notifyToast(error instanceof Error?error.message:(external?'Resource could not be opened.':'Download could not be started.'),'error');}
+    finally{setLoading(false);}
   };
-  return <div className="border-2 border-black bg-white p-3 flex flex-col sm:flex-row sm:items-center gap-3">
+  return <div className="border-2 border-black bg-white p-3 flex flex-col sm:flex-row sm:items-center gap-3 overflow-hidden">
     <div className="w-10 h-10 border-2 border-black bg-neutral-100 flex items-center justify-center shrink-0"><FileText className="w-5 h-5"/></div>
-    <div className="min-w-0 flex-1"><div className="font-display font-black uppercase truncate">{file.originalFilename || file.safeFilename}</div><div className="font-mono text-[9px] uppercase text-neutral-500 mt-1">{file.role.replaceAll('_',' ')} · {sizeLabel(file.sizeBytes)}</div></div>
-    <button onClick={()=>void handleDownload()} disabled={disabled||loading} className={`border-2 border-black px-3 py-2 font-mono text-[9px] font-black uppercase inline-flex items-center justify-center gap-2 ${disabled ? 'bg-neutral-200 text-neutral-500 cursor-not-allowed' : 'bg-[var(--color-primary)] hover:bg-black hover:text-[var(--color-primary)]'}`}>
-      {loading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Download className="w-4 h-4"/>}
-      {loading ? 'PREPARING' : 'DOWNLOAD'}
-    </button>
+    <div className="min-w-0 flex-1"><div title={String(file.displayName||file.originalFilename||'Resource')} className="font-display font-black uppercase truncate">{file.displayName||file.originalFilename||'RESOURCE'}</div><div className="font-mono text-[9px] uppercase text-neutral-500 mt-1 truncate">{external ? `${file.provider||'EXTERNAL'} · EXTERNAL RESOURCE` : `${String(file.mimeType||'FILE')} · ${sizeLabel(Number(file.sizeBytes||0))}`}{file.status==='archived'?' · HISTORICAL':''}</div></div>
+    <button onClick={()=>void handleAction()} disabled={disabled||loading} className={`w-full sm:w-auto sm:shrink-0 border-2 border-black px-3 py-2 font-mono text-[9px] font-black uppercase inline-flex items-center justify-center gap-2 ${disabled?'bg-neutral-200 text-neutral-500 cursor-not-allowed':'bg-[var(--color-primary)] hover:bg-black hover:text-[var(--color-primary)]'}`}>{loading?<Loader2 className="w-4 h-4 animate-spin"/>:<Download className="w-4 h-4"/>}{loading?(external?'OPENING':'PREPARING'):(external?'OPEN RESOURCE':'DOWNLOAD')}</button>
   </div>;
 };
 
@@ -74,7 +67,7 @@ export const PurchasesView:React.FC<Props> = ({onNavigate}) => {
               <div className="flex flex-wrap gap-2 items-center justify-between"><div className="font-mono text-[9px] uppercase text-neutral-500">PURCHASED · {dateLabel(p.purchasedAt)}</div><div className={`font-mono text-[9px] font-black uppercase inline-flex items-center gap-1 border-2 border-black px-2 py-1 ${active ? 'bg-[#00FF41]' : 'bg-neutral-200'}`}>{active ? <CheckCircle2 className="w-3.5 h-3.5"/> : null}{p.entitlementStatus}</div></div>
               <h2 className="font-display font-black text-3xl sm:text-4xl uppercase leading-none mt-2">{p.product.title}</h2>
               {p.product.subtitle && <p className="mt-2 text-neutral-600 max-w-2xl">{p.product.subtitle}</p>}
-              <div className="font-mono text-[9px] uppercase text-neutral-500 mt-4">{p.product.creatorUsername ? `BY @${p.product.creatorUsername}` : (p.product.creatorDisplayName ? `BY ${p.product.creatorDisplayName}` : 'OFFSCRPT CREATOR')} · {money(p.order.total,p.order.currency)} · {p.files.length} CURRENT FILE{p.files.length===1?'':'S'}</div>
+              <div className="font-mono text-[9px] uppercase text-neutral-500 mt-4">{p.product.creatorUsername ? `BY @${p.product.creatorUsername}` : (p.product.creatorDisplayName ? `BY ${p.product.creatorDisplayName}` : 'OFFSCRPT CREATOR')} · {money(p.order.total,p.order.currency)} · {p.files.filter(f=>String(f.resourceType||'upload')==='upload').length} FILE{p.files.filter(f=>String(f.resourceType||'upload')==='upload').length===1?'':'S'} · {p.files.filter(f=>String(f.resourceType||'')==='external').length} LINK{p.files.filter(f=>String(f.resourceType||'')==='external').length===1?'':'S'}</div>
               <div className="mt-5 flex flex-wrap gap-2"><><button onClick={()=>onNavigate('product',p.product.id)} className="border-2 border-black bg-white px-3 py-2 font-mono text-[9px] font-black uppercase inline-flex items-center gap-2"><ExternalLink className="w-4 h-4"/> VIEW PRODUCT</button><button onClick={()=>onNavigate('product',p.product.id)} className="border-2 border-black bg-[var(--color-primary)] px-3 py-2 font-mono text-[9px] font-black uppercase inline-flex items-center gap-2"><CheckCircle2 className="w-4 h-4"/> REVIEW</button></><div className="border-2 border-black bg-black text-white px-3 py-2 font-mono text-[9px] font-black uppercase inline-flex items-center gap-2"><ShieldCheck className="w-4 h-4"/> ACCOUNT-LOCKED ACCESS</div></div>
               <div className="mt-5 space-y-2">{active && p.files.length ? p.files.map(file=><FileRow key={file.id} file={file}/>) : <div className="border-2 border-dashed border-black p-5 font-mono text-[10px] uppercase text-neutral-500">DOWNLOAD ACCESS IS CURRENTLY UNAVAILABLE FOR THIS PURCHASE ({p.entitlementStatus}).</div>}</div>
             </div>

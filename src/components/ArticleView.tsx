@@ -32,7 +32,7 @@ import { CommentsSection } from './CommentsSection';
 import { RichText } from './RichText';
 import { auth, loginWithGoogle } from '../lib/firebase';
 import { useAuthUser } from '../lib/useAuthUser';
-import { getArticleLikeStatus, toggleArticleLike, getPost, getCommunityProfile } from '../lib/community';
+import { getArticleLikeStatus, toggleArticleLike, getPost, getCommunityProfile, getProfileByUsername } from '../lib/community';
 import { recordArticleView, ARTICLE_REACTIONS, getArticleReaction, setArticleReaction, getSeriesArticles } from '../lib/cms';
 import { upsertArticleAnalyticsSession, recordArticleAnalyticsEvent } from '../lib/analytics';
 import { getSeriesList } from '../lib/series';
