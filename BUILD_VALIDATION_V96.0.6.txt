@@ -1,0 +1,43 @@
+OFFSCRPT V96.0.6 — MANUAL CREATOR PAYOUT VALIDATION
+
+Target: manual creator payout mode on top of V96 trust/moderation codebase.
+
+PASS
+- package version = 0.96.6
+- V96 trust validator = 64/64
+- manual payout validator = 15/15
+- V89 marketplace validator
+- V90 payments validator
+- V92 creator/Route compatibility validator = 19/19 (manual-aware)
+- V93 commission validator = 35/35
+- V94 vendor/payout validator = 34/34
+- V95 finance validator = 23/23
+- import validator = PASS
+- export validator = PASS
+- identifier validator = PASS
+- Firebase validator = PASS
+- Firestore rules validator = PASS
+- Firestore schema validator = PASS
+- runtime-pattern validator = PASS
+- public-profile validator = PASS
+- deployment-config validator = PASS
+- 161 TS/TSX source files syntax checked with global TypeScript = 0 syntax errors
+
+MANUAL PAYOUT BEHAVIOR
+- New checkout records settlementMode=platform_manual_creator_repayment.
+- Checkout requires active seller + manual payout details, not Razorpay Route.
+- New seller onboarding collects UPI ID, mobile number and email.
+- New seller onboarding never creates a Razorpay Linked Account.
+- New payout requests are always pending_review in manual mode.
+- Admin approval reserves balance; it does not invoke Route.
+- Admin MARK PAID requires a manual payment/UPI transaction reference and records the canonical V94 payout debit.
+- Manual payout details are snapshotted onto payout records for traceability.
+- Duplicate manual payment processing is guarded by the canonical payout debit ID and payment-reference conflict check.
+- Existing legacy Route payout reconciliation code is retained only for historical payouts with explicit Route payout mode/transfer IDs; new payouts are manual.
+
+ENVIRONMENT-BLOCKED
+- npm ci: transport timeout in the execution environment.
+- npm run typecheck: incomplete local dependency/type-definition installation.
+- npm run build: Vite dependency executable is unavailable in the incomplete dependency environment.
+
+No claim of a successful production build is made.

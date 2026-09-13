@@ -86,12 +86,14 @@ export interface CreatorSellerProfile {
   subcategory?: string;
   description?: string;
   address?: {street1:string;street2?:string;city:string;state:string;postalCode:string;country:string};
+  upiId?: string; payoutMode?: 'manual'; payoutMethod?: 'manual_upi'; manualPayout?: {upiId:string;mobile:string;email:string;updatedAt?:string};
   updatedAt?: string;
   createdAt?: string;
 }
 export interface SellerOnboardingInput {
   email: string;
   phone: string;
+  upiId: string;
   legalBusinessName: string;
   customerFacingBusinessName: string;
   businessType: string;
@@ -236,15 +238,16 @@ export async function adminSetCreatorSellerStatus(creatorId:string,status:'activ
 
 
 export interface CreatorBalanceSummary {
-  creatorId:string; currency:string; pendingBalancePaise:number; availableBalancePaise:number; reservedBalancePaise:number; paidOutBalancePaise:number; totalEarnedPaise:number; totalRefundedPaise:number; totalWithdrawnPaise:number; negativeBalancePaise:number; withdrawablePaise:number; minimumPayoutPaise:number; payoutEnabled:boolean; payoutBlockedReason:string; sellerStatus:string; routeAccountStatus:string;
+  creatorId:string; currency:string; pendingBalancePaise:number; availableBalancePaise:number; reservedBalancePaise:number; paidOutBalancePaise:number; totalEarnedPaise:number; totalRefundedPaise:number; totalWithdrawnPaise:number; negativeBalancePaise:number; withdrawablePaise:number; minimumPayoutPaise:number; payoutEnabled:boolean; payoutBlockedReason:string; sellerStatus:string; routeAccountStatus:string; payoutMode?: 'manual'; payoutMethod?: 'manual_upi'; manualPayout?: {upiId:string;mobile:string;email:string};
 }
-export interface CreatorPayout { id:string; payoutId:string; creatorId:string; sellerId:string; amountPaise:number; currency:string; status:string; requestedAt?:string; approvedAt?:string; submittedAt?:string; processedAt?:string; failedAt?:string; reversedAt?:string; razorpayAccountId?:string|null; razorpayTransferId?:string|null; ledgerReservationId?:string|null; ledgerDebitId?:string|null; idempotencyKey:string; failureCode?:string|null; failureMessage?:string|null; reconciliationStatus?:string; providerTransferStatus?:string; providerSettlementStatus?:string; createdAt:string; updatedAt:string; }
+export interface CreatorPayout { id:string; payoutId:string; creatorId:string; sellerId:string; amountPaise:number; currency:string; status:string; payoutMode?: 'manual'; payoutMethod?: 'manual_upi'; manualPayoutSnapshot?: {upiId:string;mobile:string;email:string}; manualPaidAt?:string|null; manualPaidBy?:string|null; manualPaymentReference?:string|null; manualPaymentNote?:string|null; requestedAt?:string; approvedAt?:string; submittedAt?:string; processedAt?:string; failedAt?:string; reversedAt?:string; razorpayAccountId?:string|null; razorpayTransferId?:string|null; ledgerReservationId?:string|null; ledgerDebitId?:string|null; idempotencyKey:string; failureCode?:string|null; failureMessage?:string|null; reconciliationStatus?:string; providerTransferStatus?:string; providerSettlementStatus?:string; createdAt:string; updatedAt:string; }
 export async function getCreatorBalance():Promise<CreatorBalanceSummary>{ return callApi('getCreatorBalance'); }
 export async function getCreatorPayouts():Promise<{payouts:CreatorPayout[]}>{ return callApi('getCreatorPayouts'); }
 export async function getCreatorPayout(payoutId:string):Promise<{payout:CreatorPayout}>{ return callApi('getPayout',{payoutId}); }
 export async function createCreatorPayout(amount:string,idempotencyKey?:string):Promise<{payout:CreatorPayout;balance:CreatorBalanceSummary}>{ return callApi('createPayout',{amount,idempotencyKey:idempotencyKey||`payout_${Date.now()}_${Math.random().toString(36).slice(2,14)}`}); }
 export async function adminListPayouts(filters:Record<string,unknown>={}):Promise<{payouts:CreatorPayout[]}>{ return callApi('adminListPayouts',filters); }
 export async function adminApprovePayout(payoutId:string):Promise<{payout:CreatorPayout;balance?:CreatorBalanceSummary}>{ return callApi('approvePayout',{payoutId}); }
+export async function adminMarkPayoutPaid(payoutId:string,paymentReference:string,note=''):Promise<{payout:CreatorPayout;balance?:CreatorBalanceSummary}>{ return callApi('markPayoutPaid',{payoutId,paymentReference,note}); }
 export async function adminRejectPayout(payoutId:string,reason?:string):Promise<{payout:CreatorPayout;balance?:CreatorBalanceSummary}>{ return callApi('rejectPayout',{payoutId,reason}); }
 export async function adminReconcilePayout(payoutId:string):Promise<any>{ return callApi('reconcilePayout',{payoutId}); }
 

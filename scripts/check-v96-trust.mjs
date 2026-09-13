@@ -4,7 +4,14 @@ const root=process.cwd();
 const read=(p)=>fs.readFileSync(path.join(root,p),'utf8');
 const checks=[]; const ok=(name,cond)=>checks.push([name,!!cond]);
 const pkg=JSON.parse(read('package.json')); const api=read('api/commerce/index.ts'); const rules=read('firestore.rules'); const lib=read('src/lib/commerce.ts'); const indexes=read('firestore.indexes.json');
-ok('version 0.96.5',pkg.version==='0.96.5');
+ok('version 0.96.6',pkg.version==='0.96.6');
+ok('manual payout mode',api.includes('MANUAL_PAYOUT_MODE')&&api.includes('MANUAL_PAYOUT_METHOD')&&api.includes("const MANUAL_PAYOUT_METHOD = 'manual_upi';"));
+ok('manual payout API',api.includes("action==='markPayoutPaid'")&&api.includes('manualPaymentReference'));
+ok('Route disabled for new payouts',api.includes("ROUTE_DISABLED")&&api.includes('Razorpay Route transfers are disabled'));
+ok('checkout manual settlement mode',api.includes("settlementMode:'platform_manual_creator_repayment'")&&api.includes('const payoutDetails=seller.fields?.manualPayout'));
+ok('creator payout details',lib.includes('upiId')&&lib.includes('manualPayout'));
+ok('admin manual payout UI',fs.existsSync(path.join(root,'src/components/PayoutAdminPanel.tsx'))&&read('src/components/PayoutAdminPanel.tsx').includes('MARK PAID'));
+
 ok('review collection API',api.includes('commerceReviews'));
 ok('report collection API',api.includes('commerceReports'));
 ok('moderation cases API',api.includes('commerceModerationCases'));

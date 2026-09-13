@@ -17,12 +17,12 @@ const checks=[
  ['admin seller actions', files.api.includes("action==='adminListSellers'") && files.api.includes("action==='adminSetSellerStatus'"),],
  ['Route webhook action', files.api.includes("action==='razorpayRouteWebhook'"),],
  ['webhook signature verification', files.route.includes('verifyRouteWebhook') && files.api.includes('verifyRouteWebhook(raw,signature)'),],
- ['creator seller UI', files.ui.includes('SELLER ONBOARDING') && files.ui.includes('CONNECT RAZORPAY SELLER ACCOUNT'),],
- ['seller eligibility gate', files.api.includes("seller.fields.sellerEnabled")],
+ ['creator seller UI', (files.api.includes('MANUAL_PAYOUT_MODE') && files.ui.includes('MANUAL SELLER PAYOUTS')) || (files.ui.includes('SELLER ONBOARDING') && files.ui.includes('CONNECT RAZORPAY SELLER ACCOUNT')),],
+ ['seller eligibility gate', files.api.includes('seller?.fields?.sellerEnabled') && files.api.includes('onboardingStatus')],
  ['product publishing gate', files.api.includes('Complete seller onboarding and enable selling before publishing'),],
  ['no client account trust', files.api.includes('product.fields.creatorId') && !files.ui.includes('razorpayAccountId = creator'),],
  ['Firestore seller rules', files.rules.includes('match /creatorCommerceProfiles/{creatorId}') && files.rules.includes('allow write: if false'),],
- ['admin seller management UI', files.admin.includes('V92 SELLER MANAGEMENT')],
+ ['admin seller management UI', files.admin.includes('SELLER MANAGEMENT · MANUAL PAYOUTS') || files.admin.includes('V92 SELLER MANAGEMENT')],
  ['V94 payout extension does not replace V92 Route foundation', files.api.includes('createDirectTransfer') && files.route.includes('requestV1')]
 ];
 let failed=0; for(const [name,ok] of checks){console.log(`${ok?'PASS':'FAIL'} ${name}`); if(!ok)failed++;}

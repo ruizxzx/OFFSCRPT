@@ -1,10 +1,10 @@
-OFFSCRPT V96.05 FIXED BUILD VALIDATION
+OFFSCRPT V96.0.6 FIXED BUILD VALIDATION
 =====================================
 
 SECOND-PASS AUDIT OF SUPPLIED V96 ARCHIVE
 
 Source: OFFSCRPT V96.0.0 Trust/Moderation/Reviews archive supplied by user
-Target: V96.05 Fixed Build
+Target: V96.0.6 Fixed Build
 
 SOURCE VALIDATION
 - TypeScript/TSX parse: PASS (159/159)
