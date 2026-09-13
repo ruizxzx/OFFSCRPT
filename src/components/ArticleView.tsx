@@ -263,7 +263,11 @@ export const ArticleView: React.FC<ArticleViewProps> = ({
         }
         if (!post?.authorId) { if (active) setResolvedOriginalAuthor(fallback); return; }
         let profile:any = null;
-        try { profile = await getCommunityProfile(post.authorId); } catch (error) { console.warn('OFFSCRPT recoverable operation failed:', error); }
+        try {
+          profile = post.authorUsername
+            ? await getProfileByUsername(String(post.authorUsername))
+            : (auth.currentUser?.uid === String(post.authorId) ? await getCommunityProfile(post.authorId) : null);
+        } catch (error) { console.warn('OFFSCRPT recoverable operation failed:', error); }
         if (active) setResolvedOriginalAuthor({
           ...fallback,
           uid: post.authorId,

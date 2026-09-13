@@ -1129,11 +1129,19 @@ export async function getPost(postId: string): Promise<CommunityPost | null> {
     if (!snap.exists()) return null;
     const data:any = snap.data();
     let live = data;
-    if (data.authorId) {
+    if (data.authorUsername) {
+      // Public post rendering must never read another user's private /users/{uid} document.
+      // Firestore rules intentionally restrict that document to the owner/admin, which caused
+      // repeated PERMISSION_DENIED errors on public pages. The publicProfiles projection is the
+      // canonical public identity source.
       try {
-        const profile = await getCommunityProfile(String(data.authorId));
-        if (profile) live = { ...data, authorUsername: profile.username || data.authorUsername || '', authorName: profile.displayName || data.authorName || '', authorAvatar: profile.photoURL || data.authorAvatar || '', isVerified: !!profile.isVerified, verificationColor: profile.verificationColor || data.verificationColor || '#2196F3' };
-      } catch (identityError) { console.warn('Post author identity refresh failed:', identityError); }
+        const cleanAuthor = normalizeUsername(String(data.authorUsername));
+        const publicSnap = cleanAuthor ? await getDoc(doc(db, 'publicProfiles', cleanAuthor)) : null;
+        if (publicSnap?.exists()) {
+          const profile:any = mapDocDates(publicSnap.data());
+          live = { ...data, authorUsername: profile.username || data.authorUsername || '', authorName: profile.displayName || data.authorName || '', authorAvatar: profile.photoURL || data.authorAvatar || '', isVerified: !!profile.isVerified, verificationColor: profile.verificationColor || data.verificationColor || '#2196F3' };
+        }
+      } catch (identityError) { console.warn('Post public author identity refresh failed:', identityError); }
     }
     return { ...live, id: snap.id, type: live.type || live.postType || 'discussion', communityId: live.communityId || (ref.path.startsWith('communities/') ? ref.path.split('/')[1] : undefined),
       commentsCount: Number(live.commentsCount || 0), upvotesCount: Number(live.upvotesCount ?? (live.score > 0 ? live.score : 0)), downvotesCount: Number(live.downvotesCount || 0), repostsCount: Number(live.repostsCount || 0), viewsCount: Number(live.viewsCount || 0),

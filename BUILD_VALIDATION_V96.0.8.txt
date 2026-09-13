@@ -1,0 +1,37 @@
+OFFSCRPT V96.0.8 — Firestore + Public Identity Hotfix Validation
+
+Source: OFFSCRPT-V96.0.7-FIRESTORE-QUERY-HOTFIX(1).zip
+
+FIXES VERIFIED
+- Product published-review endpoint no longer orders by createdAt in the equality-filtered query, removing the reported productId+status+createdAt composite dependency.
+- Creator trust products endpoint queries creatorId only and sorts server-side.
+- Creator payout listing queries creatorId only and sorts server-side.
+- V96 review aggregate rebuild avoids productId+createdAt ordered query.
+- Public post/article author refresh no longer reads another user's private /users/{uid}; it uses publicProfiles when authorUsername is available.
+- Existing Firestore composite indexes remain declared for production scaling.
+
+VALIDATORS
+- V96 Trust: PASS 68/68
+- V96 Manual Payouts: PASS 15/15
+- V95 Finance: PASS 23/23
+- V94 Vendor/Payout: PASS 34/34
+- V93 Commission: PASS 35/35
+- V92 Creator/Route: PASS 19/19
+- V89 Marketplace: PASS
+- Imports: PASS
+- Firebase: PASS
+- Rules: PASS
+- Schema: PASS
+- Runtime patterns: PASS
+- Public profile: PASS
+- Changed-file TypeScript parse/syntax: PASS 5/5
+
+ENVIRONMENT LIMITATION
+- Full npm ci timed out in the execution environment.
+- Full dependency-backed tsc/build could therefore not be completed.
+- This is not reported as a passing production build.
+
+DEPLOYMENT REQUIREMENT
+- Deploy the updated application/API.
+- Deploy firestore.indexes.json as normal Firebase configuration.
+- Clear/refresh the Vercel deployment/browser cache after deployment.

@@ -22,7 +22,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth, checkIsAdmin } from './firebase';
 import { writeAdminAudit } from './audit';
-import { deletePost, getCommunityProfile, getPost } from './community';
+import { deletePost, getCommunityProfile, getProfileByUsername, getPost } from './community';
 import { getModeratorPermissions } from './social';
 import { resolveMasterAccess } from './masterControl';
 import { Article, SiteConfig, BentoLink, ArticleComment, CommunityPost, NavigationItemConfig } from '../types';
@@ -514,7 +514,11 @@ async function hydrateArticleOriginalAuthor(article: Article): Promise<Article> 
     }
     if (!post?.authorId) return article;
     let profile:any = null;
-    try { profile = await getCommunityProfile(post.authorId); } catch (error) { console.warn('OFFSCRPT recoverable operation failed:', error); }
+    try {
+      profile = post.authorUsername
+        ? await getProfileByUsername(String(post.authorUsername))
+        : (auth.currentUser?.uid === String(post.authorId) ? await getCommunityProfile(post.authorId) : null);
+    } catch (error) { console.warn('OFFSCRPT recoverable operation failed:', error); }
     const originalAuthor = {
       ...fallback,
       uid: post.authorId,
@@ -858,7 +862,11 @@ export async function saveArticle(article: Article, options:{createRevision?:boo
 
 async function resolveOriginalCreatorForPromotion(post: CommunityPost) {
   let profile:any = null;
-  try { profile = post.authorId ? await getCommunityProfile(post.authorId) : null; } catch (error) { console.warn('OFFSCRPT recoverable operation failed:', error); }
+  try {
+    profile = post.authorUsername
+      ? await getProfileByUsername(String(post.authorUsername))
+      : (auth.currentUser?.uid === String(post.authorId) ? await getCommunityProfile(post.authorId) : null);
+  } catch (error) { console.warn('OFFSCRPT recoverable operation failed:', error); }
   const username = profile?.username || post.authorUsername || 'creator';
   const name = profile?.displayName || post.authorName || username;
   const avatar = profile?.photoURL || post.authorAvatar || '';

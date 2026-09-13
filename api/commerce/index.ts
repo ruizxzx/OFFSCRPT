@@ -124,6 +124,15 @@ async function fsRunQueryAll(token:string,from:string,filters:any[] = [],orderBy
   return out;
 }
 
+// Equality-only bulk reads intentionally omit orderBy so they work without any composite index.
+// Callers sort/filter the bounded result server-side. This is used on public/creator screens where
+// a missing Firestore deployment index must not turn into a blocking 400 popup.
+async function fsRunQueryAllUnordered(token:string,from:string,filters:any[]=[],limitCount=500){
+  const safeLimit=Math.max(1,Math.min(500,Number(limitCount)||500));
+  const rows=await fsRunQueryAdvanced(token,from,filters,{limit:safeLimit});
+  return rows;
+}
+
 function v95Iso(value:any){
   const d=new Date(value);
   if(!Number.isFinite(d.getTime())) return null;
@@ -683,7 +692,11 @@ async function v94ApproveAndSubmitPayout(token:string,payoutId:string,adminUid:s
 async function createPayout(token:string,uid:string,b:any){return v94CreatePayout(token,uid,b);}
 async function getCreatorBalance(token:string,uid:string){return v94GetBalance(token,uid);}
 async function listCreatorPayouts(token:string,uid:string){
-  const rows=await fsRunQueryAdvanced(token,'creatorPayouts',[fsFilter('creatorId','EQUAL',{stringValue:uid})],{orderBy:[{fieldPath:'createdAt',direction:'DESCENDING'}],limit:100});
+  // Avoid creatorId+createdAt composite-index dependency; the server sorts the owner's
+  // bounded payout set after the equality-only query.
+  const rows=(await fsRunQueryAllUnordered(token,'creatorPayouts',[fsFilter('creatorId','EQUAL',{stringValue:uid})],500))
+    .sort((a,b)=>String(b.fields?.createdAt||'').localeCompare(String(a.fields?.createdAt||'')) || v96DocId(a).localeCompare(v96DocId(b)))
+    .slice(0,100);
   return {payouts:rows.map(v94PublicPayout)};
 }
 async function getPayout(token:string,uid:string,b:any,email?:string,emailVerified?:boolean){
@@ -1454,7 +1467,8 @@ async function v96CommitReviewMutation(token:string,review:any,nextReview:any,de
   const productId=String(nextReview.productId||review.fields?.productId||''); const writes:any[]=[{update:{name:`${firestoreBase()}/commerceReviews/${v96DocId(review)}`,fields:fields(nextReview)}},{create:{name:`${firestoreBase()}/commerceModerationActions/${v96Id('action',requestId)}`,fields:fields(actionDoc)}},v96AuditWrite(actionDoc),...extraWrites]; const pre:any={...extraPreconditions}; const agg=delta && (delta.reviewCount||delta.ratingTotal||delta.verifiedReviewCount||delta.rating1Count||delta.rating2Count||delta.rating3Count||delta.rating4Count||delta.rating5Count)?await v96GetAggregate(token,productId):null; if(agg){const nextAgg={...v96AggregateNext(agg.fields||{},delta),productId,updatedAt:v96Now(),lastRequestId:requestId}; if(agg.updateTime){writes.splice(1,0,{update:{name:`${firestoreBase()}/commerceReviewAggregates/${productId}`,fields:fields(nextAgg)}}); pre[`commerceReviewAggregates/${productId}`]=agg.updateTime;}else{writes.splice(1,0,{create:{name:`${firestoreBase()}/commerceReviewAggregates/${productId}`,fields:fields(nextAgg)}});} } pre[`commerceReviews/${v96DocId(review)}`]=review.updateTime; await fsCommitWithPrecondition(token,writes,pre); return {review:nextReview,aggregate:agg?v96AggregateNext(agg.fields||{},delta):undefined};}
 
 async function v96RebuildAggregateData(token:string,productId:string){
-  const reviews=await fsRunQueryAll(token,'commerceReviews',[fsFilter('productId','EQUAL',{stringValue:productId})],[{fieldPath:'createdAt',direction:'ASCENDING'},{fieldPath:'__name__',direction:'ASCENDING'}]);
+  const reviews=(await fsRunQueryAllUnordered(token,'commerceReviews',[fsFilter('productId','EQUAL',{stringValue:productId})],500))
+    .sort((a,b)=>String(v96Fields(a).createdAt||'').localeCompare(String(v96Fields(b).createdAt||'')) || v96DocId(a).localeCompare(v96DocId(b)));
   return v96AggregateFromReviews(reviews);
 }
 async function v96Eligibility(token:string,uid:string,productId:string){
@@ -1514,30 +1528,35 @@ async function v96ListPublicReviews(token:string,productId:string,params:any){
   const product=await v96GetProduct(token,productId);
   if(String(product.fields.status||'')!=='active'||String(product.fields.visibility||'')!=='public'||String(product.fields.moderationStatus||'active')!=='active')return {reviews:[],nextCursor:null,aggregate:await v96GetAggregate(token,productId)};
   const sort=v96Text(params.sort,'recent'); const normalized=V96_PUBLIC_SORTS.has(sort)?sort:'recent'; const limitCount=Math.max(1,Math.min(50,Number(params.limit||20)));
-  // Only query on the fields covered by the established V96/V95 indexes. moderationStatus is
-  // intentionally filtered server-side so a deployed database with the older product/status
-  // review index remains usable without a new composite-index rollout.
-  const filters=[fsFilter('productId','EQUAL',{stringValue:productId}),fsFilter('status','EQUAL',{stringValue:'published'})];
-  let order:any[]=[{fieldPath:'createdAt',direction:'DESCENDING'}];
-  if(normalized==='highest')order=[{fieldPath:'rating',direction:'DESCENDING'},{fieldPath:'createdAt',direction:'DESCENDING'}];
-  if(normalized==='lowest')order=[{fieldPath:'rating',direction:'ASCENDING'},{fieldPath:'createdAt',direction:'DESCENDING'}];
-  if(normalized==='verified')order=[{fieldPath:'verifiedPurchase',direction:'DESCENDING'},{fieldPath:'createdAt',direction:'DESCENDING'}];
-  order=[...order,{fieldPath:'__name__',direction:'DESCENDING'}];
+  // Deliberately avoid composite-index-dependent ordering here. The browser was
+  // previously failing with FAILED_PRECONDITION for productId+status+createdAt.
+  // Query only the equality fields (which use Firestore single-field indexes), then
+  // apply the public moderation filter, stable sorting, and cursor slicing in the
+  // server. This keeps public product pages functional even before indexes are deployed.
+  const rows=await fsRunQueryAllUnordered(token,'commerceReviews',[
+    fsFilter('productId','EQUAL',{stringValue:productId}),
+    fsFilter('status','EQUAL',{stringValue:'published'})
+  ],500);
+  const publicRows=rows.filter(r=>v96ReviewIsPublic(v96Fields(r)));
+  publicRows.sort((a,b)=>{
+    const af=v96Fields(a), bf=v96Fields(b);
+    if(normalized==='highest'){const d=Number(bf.rating||0)-Number(af.rating||0); if(d) return d;}
+    if(normalized==='lowest'){const d=Number(af.rating||0)-Number(bf.rating||0); if(d) return d;}
+    if(normalized==='verified'){const d=Number(Boolean(bf.verifiedPurchase))-Number(Boolean(af.verifiedPurchase)); if(d) return d;}
+    const d=String(bf.createdAt||'').localeCompare(String(af.createdAt||''));
+    return d || v96DocId(b).localeCompare(v96DocId(a));
+  });
   const cursor=decodeV96QueryCursor(params.cursor);
-  let start=cursor?.values;
-  const publicRows:any[]=[];
-  let safety=0;
-  while(publicRows.length<limitCount+1 && safety++<20){
-    const rows=await fsRunQueryAdvanced(token,'commerceReviews',filters,{limit:Math.min(100,Math.max(limitCount+1,50)),orderBy:order,startAt:start?{values:start,before:false}:undefined});
-    if(!rows.length) break;
-    const firstCursorId=start?.[start.length-1]?.referenceValue?String(start[start.length-1].referenceValue).split('/').pop():'';
-    const page=firstCursorId&&v96DocId(rows[0])===firstCursorId?rows.slice(1):rows;
-    for(const row of page){if(v96ReviewIsPublic(v96Fields(row)))publicRows.push(row); if(publicRows.length>=limitCount+1)break;}
-    if(publicRows.length>=limitCount+1)break;
-    if(rows.length<Math.min(100,Math.max(limitCount+1,50))) break;
-    start=v96CursorValuesForRow(rows[rows.length-1],order);
+  let startIndex=0;
+  if(cursor){
+    const cursorId=cursor.values?.find((v:any)=>v?.referenceValue)?.referenceValue;
+    const id=cursorId?String(cursorId).split('/').pop():'';
+    const idx=publicRows.findIndex(r=>v96DocId(r)===id);
+    if(idx>=0) startIndex=idx+1;
   }
-  const page=publicRows.slice(0,limitCount); const next=publicRows.length>limitCount?encodeV96QueryCursor(publicRows[limitCount-1],order):null;
+  const page=publicRows.slice(startIndex,startIndex+limitCount);
+  const hasMore=startIndex+limitCount<publicRows.length;
+  const next=hasMore&&page.length?encodeV96QueryCursor(page[page.length-1],[{fieldPath:'createdAt',direction:'DESCENDING'},{fieldPath:'__name__',direction:'DESCENDING'}]):null;
   return {reviews:page.map(v96CleanReviewPublic),nextCursor:next,aggregate:await v96GetAggregate(token,productId)};
 }
 
@@ -1557,11 +1576,11 @@ async function v96GetTrustSignals(token:string,productId:string,creatorId?:strin
   return {productId,creatorId:cid,sellerStatus:operational?'active':'not_public',trustStatus:publicTrust,productPublished:true,verifiedReviewCount:Number(af.verifiedReviewCount||0),reviewCount:Number(af.reviewCount||0),averageRating:Number(af.averageRating||0),trustedSeller:publicTrust==='trusted'&&Number(af.verifiedReviewCount||0)>=5&&Number(af.averageRating||0)>=4,generatedAt:v96Now()};
 }
 async function v96GetCreatorTrustSignals(token:string,creatorId:string){
-  // Query only the creatorId field with the established creatorId+updatedAt index. Status and
-  // visibility remain server-authoritative filters, preventing the product page from requiring
-  // the creatorId+status+visibility+updatedAt composite shown in the browser error.
-  const products= (await fsRunQueryAll(token,'commerceProducts',[fsFilter('creatorId','EQUAL',{stringValue:creatorId})],[{fieldPath:'updatedAt',direction:'DESCENDING'},{fieldPath:'__name__',direction:'DESCENDING'}]))
-    .filter(p=>String(p.fields?.status||'')==='active'&&String(p.fields?.visibility||'')==='public');
+  // Query by creatorId only. Filtering and sorting are performed server-side after retrieval
+  // so this endpoint never depends on a creatorId+updatedAt composite index being deployed.
+  const products= (await fsRunQueryAllUnordered(token,'commerceProducts',[fsFilter('creatorId','EQUAL',{stringValue:creatorId})],500))
+    .filter(p=>String(p.fields?.status||'')==='active'&&String(p.fields?.visibility||'')==='public')
+    .sort((a,b)=>String(b.fields?.updatedAt||'').localeCompare(String(a.fields?.updatedAt||'')) || v96DocId(a).localeCompare(v96DocId(b)));
   let reviewCount=0,verifiedReviewCount=0,totalRating=0; const productSignals:any[]=[];
   for(const p of products){if(String(p.fields?.moderationStatus||'active')!=='active'||String(p.fields?.trustState||'active')==='restricted')continue; const pid=v96DocId(p), agg=await v96GetAggregate(token,pid), a=agg.fields||{}; reviewCount+=Number(a.reviewCount||0); verifiedReviewCount+=Number(a.verifiedReviewCount||0); totalRating+=Number(a.averageRating||0)*Number(a.reviewCount||0); productSignals.push({productId:pid,title:String(p.fields?.title||''),reviewCount:Number(a.reviewCount||0),averageRating:Number(a.averageRating||0),verifiedReviewCount:Number(a.verifiedReviewCount||0)});}
   const seller=await fsGet(token,`creatorCommerceProfiles/${creatorId}`), sellerEnabled=seller?.fields?.sellerEnabled!==false, sellerStatus=String(seller?.fields?.onboardingStatus||'not_started'), operational=sellerEnabled&&sellerStatus==='active', raw=String(seller?.fields?.trustStatus||'new'), averageRating=reviewCount?Number((totalRating/reviewCount).toFixed(2)):0, trustedSeller=operational&&raw==='trusted'&&verifiedReviewCount>=5&&averageRating>=4;
